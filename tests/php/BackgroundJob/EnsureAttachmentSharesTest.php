@@ -32,6 +32,7 @@ class EnsureAttachmentSharesTest extends TestCase {
 		$time = $this->createMock(ITimeFactory::class);
 		$time->method('getTime')->willReturn(1000000);
 		$room = $this->createMock(Room::class);
+		$room->method('getToken')->willReturn('wqhg8fxn');
 		$manager = $this->createMock(Manager::class);
 		$manager->method('getRoomById')->with(12)->willReturn($room);
 		$this->sharer = $this->createMock(AttachmentSharer::class);
@@ -51,11 +52,21 @@ class EnsureAttachmentSharesTest extends TestCase {
 
 	public function testRetryIsScheduledWithBackoff(): void {
 		$roomShare = $this->createMock(IShare::class);
+		$roomShare->method('getSharedWith')->willReturn('wqhg8fxn');
 		$this->roomShareProvider->method('getShareById')->with('5')->willReturn($roomShare);
 		$this->sharer->method('shareRoomShare')->with($this->anything(), $roomShare, null, false)->willReturn(false);
 		$this->jobList->expects($this->once())
 			->method('scheduleAfter')
 			->with(EnsureAttachmentShares::class, 1000000 + 2 * 300, ['roomId' => 12, 'roomShareId' => '5', 'attempt' => 3]);
+		self::invokePrivate($this->job, 'run', [['roomId' => 12, 'roomShareId' => '5', 'attempt' => 2]]);
+	}
+
+	public function testShareOfAnotherRoomIsIgnored(): void {
+		$roomShare = $this->createMock(IShare::class);
+		$roomShare->method('getSharedWith')->willReturn('otherroom');
+		$this->roomShareProvider->method('getShareById')->with('5')->willReturn($roomShare);
+		$this->sharer->expects($this->never())->method('shareRoomShare');
+		$this->jobList->expects($this->never())->method('scheduleAfter');
 		self::invokePrivate($this->job, 'run', [['roomId' => 12, 'roomShareId' => '5', 'attempt' => 2]]);
 	}
 

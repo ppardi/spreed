@@ -74,7 +74,13 @@ class AttachmentSharer {
 		}
 
 		foreach ($this->roomShareProvider->getSharesByIds($ids) as $roomShare) {
-			$success = $this->shareWithRecipients($room, $roomShare, $recipients) && $success;
+			try {
+				$success = $this->shareWithRecipients($room, $roomShare, $recipients) && $success;
+			} catch (\Throwable $e) {
+				// One broken room share must not keep the others from being shared
+				$this->logger->warning('Could not share conversation attachment ' . $roomShare->getId() . ', retrying later', ['exception' => $e]);
+				$success = false;
+			}
 		}
 		return $success;
 	}

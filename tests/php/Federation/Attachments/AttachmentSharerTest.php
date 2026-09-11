@@ -329,6 +329,33 @@ class AttachmentSharerTest extends TestCase {
 		$this->assertTrue($this->sharer->shareAllRoomShares($this->room));
 	}
 
+	public function testOneFailingRoomShareDoesNotStopTheOthers(): void {
+		$otherRoomShare = $this->createMock(IShare::class);
+		$otherRoomShare->method('getId')->willReturn('8');
+		$this->roomShareProvider->method('getShareIdsInRoom')->willReturn(['5', '8']);
+		$this->roomShareProvider->method('getSharesByIds')->willReturn([$this->roomShare, $otherRoomShare]);
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+
+		$row = new AttachmentShare();
+		$row->setShareId('9');
+		$handled = [];
+		$this->mapper->expects($this->exactly(2))
+			->method('findForRecipient')
+			->willReturnCallback(function (int $roomId, string $sourceType, string $sourceId) use (&$handled, $row): AttachmentShare {
+				$handled[] = $sourceId;
+				if ($sourceId === '5') {
+					throw new \RuntimeException('Broken room share');
+				}
+				return $row;
+			});
+		$this->shareManager->method('getShareById')->with('ocFederatedSharing:9')->willReturn($this->createMock(IShare::class));
+
+		$this->assertFalse($this->sharer->shareAllRoomShares($this->room));
+		$this->assertSame(['5', '8'], $handled);
+	}
+
 	public function testUnreachableServerMakesShareAllRoomSharesRetry(): void {
 		$this->roomShareProvider->method('getShareIdsInRoom')->willReturn(['5']);
 		$this->roomShareProvider->method('getSharesByIds')->willReturn([$this->roomShare]);

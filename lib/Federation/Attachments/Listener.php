@@ -189,20 +189,25 @@ class Listener implements IEventListener {
 	}
 
 	private function getRoomShareOfMessage(Room $room, array $parameters): ?IShare {
+		$roomShare = null;
 		if (isset($parameters['share'])) {
 			try {
-				return $this->roomShareProvider->getShareById((string)$parameters['share']);
+				$roomShare = $this->roomShareProvider->getShareById((string)$parameters['share']);
 			} catch (ShareNotFound) {
 				return null;
 			}
-		}
-		if (isset($parameters['fileId'])) {
+		} elseif (isset($parameters['fileId'])) {
 			$node = $this->rootFolder->getFirstNodeById((int)$parameters['fileId']);
 			if ($node instanceof Node) {
-				return $this->roomShareLocator->findForNode($room, $node)[0];
+				$roomShare = $this->roomShareLocator->findForNode($room, $node)[0];
 			}
 		}
-		return null;
+
+		// Never share another conversation's files because of a message in this one
+		if ($roomShare === null || $roomShare->getSharedWith() !== $room->getToken()) {
+			return null;
+		}
+		return $roomShare;
 	}
 
 	private function getHostedRoom(string $token): ?Room {

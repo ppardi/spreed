@@ -36,6 +36,7 @@ use Test\TestCase;
 class ListenerTest extends TestCase {
 	protected AttachmentSharer&MockObject $sharer;
 	protected Manager&MockObject $manager;
+	protected RoomShareProvider&MockObject $roomShareProvider;
 	protected RoomShareLocator&MockObject $locator;
 	protected IRootFolder&MockObject $rootFolder;
 	protected IJobList&MockObject $jobList;
@@ -48,9 +49,11 @@ class ListenerTest extends TestCase {
 		$this->sharer = $this->createMock(AttachmentSharer::class);
 		$this->room = $this->createMock(Room::class);
 		$this->room->method('getId')->willReturn(12);
+		$this->room->method('getToken')->willReturn('wqhg8fxn');
 		$this->room->method('isFederatedConversation')->willReturn(false);
 		$this->manager = $this->createMock(Manager::class);
 		$this->manager->method('getRoomByToken')->with('wqhg8fxn')->willReturn($this->room);
+		$this->roomShareProvider = $this->createMock(RoomShareProvider::class);
 		$this->locator = $this->createMock(RoomShareLocator::class);
 		$this->rootFolder = $this->createMock(IRootFolder::class);
 		$this->jobList = $this->createMock(IJobList::class);
@@ -61,7 +64,7 @@ class ListenerTest extends TestCase {
 		$this->listener = new Listener(
 			$this->sharer,
 			$this->manager,
-			$this->createMock(RoomShareProvider::class),
+			$this->roomShareProvider,
 			$this->locator,
 			$this->rootFolder,
 			$this->jobList,
@@ -118,11 +121,39 @@ class ListenerTest extends TestCase {
 		$file = $this->createMock(File::class);
 		$this->rootFolder->method('getFirstNodeById')->with(187)->willReturn($file);
 		$roomShare = $this->createMock(IShare::class);
+		$roomShare->method('getSharedWith')->willReturn('wqhg8fxn');
 		$this->locator->method('findForNode')->with($this->room, $file)->willReturn([$roomShare, 'photo1.jpg']);
 		$this->sharer->expects($this->once())->method('shareRoomShare')->with($this->room, $roomShare)->willReturn(true);
 		$this->jobList->expects($this->never())->method('scheduleAfter');
 
 		$this->listener->handle(new SystemMessageSentEvent($this->room, $comment));
+	}
+
+	private function fileMessage(array $parameters): IComment&MockObject {
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getMessage')->willReturn(json_encode(['message' => 'file_shared', 'parameters' => $parameters]));
+		return $comment;
+	}
+
+	public function testLegacyFileMessageIsShared(): void {
+		$this->config->method('isFederationEnabled')->willReturn(true);
+		$roomShare = $this->roomShare();
+		$this->roomShareProvider->method('getShareById')->with('5')->willReturn($roomShare);
+		$this->sharer->expects($this->once())->method('shareRoomShare')->with($this->room, $roomShare)->willReturn(true);
+
+		$this->listener->handle(new SystemMessageSentEvent($this->room, $this->fileMessage(['share' => '5'])));
+	}
+
+	public function testFileMessageWithAnotherRoomsShareIsIgnored(): void {
+		$this->config->method('isFederationEnabled')->willReturn(true);
+		$otherRoomShare = $this->createMock(IShare::class);
+		$otherRoomShare->method('getShareType')->willReturn(IShare::TYPE_ROOM);
+		$otherRoomShare->method('getSharedWith')->willReturn('otherroom');
+		$this->roomShareProvider->method('getShareById')->with('5')->willReturn($otherRoomShare);
+		$this->sharer->expects($this->never())->method('shareRoomShare');
+		$this->jobList->expects($this->never())->method('scheduleAfter');
+
+		$this->listener->handle(new SystemMessageSentEvent($this->room, $this->fileMessage(['share' => '5'])));
 	}
 
 	public function testHistoryClearedRemovesAllShares(): void {

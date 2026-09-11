@@ -80,6 +80,8 @@ class FederatedFileConverter {
 			return $message;
 		}
 
+		// Comes from the host: don't trust the types
+		$name = is_string($reference['name']) ? $reference['name'] : '';
 		try {
 			$node = $this->resolve($room, $participant, $reference);
 			if ($node !== null) {
@@ -87,10 +89,10 @@ class FederatedFileConverter {
 				return $message;
 			}
 		} catch (\Throwable $e) {
-			$this->logger->warning('Could not show federated attachment ' . $reference['name'], ['exception' => $e]);
+			$this->logger->warning('Could not show federated attachment ' . $name, ['exception' => $e]);
 		}
 
-		return $this->withFallback($message, $reference['name']);
+		return $this->withFallback($message, $name);
 	}
 
 	/**

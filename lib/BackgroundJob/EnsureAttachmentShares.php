@@ -68,6 +68,10 @@ class EnsureAttachmentShares extends QueuedJob {
 				} catch (ShareNotFound) {
 					return;
 				}
+				if ($roomShare->getSharedWith() !== $room->getToken()) {
+					// Not a share of this conversation
+					return;
+				}
 				$success = $this->sharer->shareRoomShare($room, $roomShare, $cloudId, $refreshDiscovery);
 			} else {
 				$success = $this->sharer->shareAllRoomShares($room, $cloudId, $refreshDiscovery);

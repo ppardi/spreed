@@ -152,6 +152,19 @@ class FederatedFileConverterTest extends TestCase {
 		$this->assertSame('*"photo1.jpg" is not available*', $converted['message']);
 	}
 
+	public function testMalformedReferenceFallsBackToText(): void {
+		$this->loginAs('bill');
+		// Values from the host that are not strings must not break the whole message list
+		$reference = array_merge(self::REFERENCE, ['name' => ['photo1.jpg'], 'server' => 42]);
+
+		$converted = $this->converter->convertMessage($this->room, $this->participant, [
+			'message' => '{file}',
+			'messageParameters' => ['file' => $reference],
+		]);
+		$this->assertSame('*"" is not available*', $converted['message']);
+		$this->assertArrayNotHasKey('file', $converted['messageParameters']);
+	}
+
 	public function testEachFileIsResolvedOncePerRequest(): void {
 		$this->loginAs('bill');
 		$node = $this->createMock(File::class);
