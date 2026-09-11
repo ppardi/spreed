@@ -34,7 +34,7 @@ class AttachmentShareMapperTest extends TestCase {
 		parent::tearDown();
 	}
 
-	private function addRow(string $sourceId, string $recipient, string $shareId): AttachmentShare {
+	private function addRow(string $sourceId, string $recipient, string $shareId, string $origin = AttachmentShare::ORIGIN_CREATED): AttachmentShare {
 		$row = new AttachmentShare();
 		$row->setRoomId(self::ROOM_ID);
 		$row->setSourceType(AttachmentShare::SOURCE_ROOM_SHARE);
@@ -45,6 +45,7 @@ class AttachmentShareMapperTest extends TestCase {
 		$row->setRecipientActorType('federated_users');
 		$row->setRecipientActorId($recipient);
 		$row->setShareId($shareId);
+		$row->setOrigin($origin);
 		$row->setCreatedAt(new \DateTime());
 		return $this->mapper->insert($row);
 	}
@@ -65,5 +66,29 @@ class AttachmentShareMapperTest extends TestCase {
 
 		$this->mapper->deleteByOwnerShareId('', '7');
 		$this->assertCount(2, $this->mapper->findByRoom(self::ROOM_ID));
+	}
+
+	public function testOriginIsStored(): void {
+		$this->addRow('5', 'bill@nc2.test', '6', AttachmentShare::ORIGIN_ADOPTED);
+		$this->addRow('8', 'bill@nc2.test', '9');
+
+		$adopted = $this->mapper->findForRecipient(self::ROOM_ID, AttachmentShare::SOURCE_ROOM_SHARE, '5', 'federated_users', 'bill@nc2.test');
+		$this->assertSame(AttachmentShare::ORIGIN_ADOPTED, $adopted?->getOrigin());
+		$created = $this->mapper->findForRecipient(self::ROOM_ID, AttachmentShare::SOURCE_ROOM_SHARE, '8', 'federated_users', 'bill@nc2.test');
+		$this->assertSame(AttachmentShare::ORIGIN_CREATED, $created?->getOrigin());
+	}
+
+	public function testCountByOwnerShareId(): void {
+		// The same federated share used by two sources (e.g. one file shared into two conversations)
+		$this->addRow('5', 'bill@nc2.test', '6');
+		$this->addRow('8', 'bill@nc2.test', '6', AttachmentShare::ORIGIN_ADOPTED);
+		$this->addRow('10', 'bill@nc2.test', '11');
+
+		$this->assertSame(2, $this->mapper->countByOwnerShareId('', '6'));
+		$this->assertSame(1, $this->mapper->countByOwnerShareId('', '6', AttachmentShare::ORIGIN_CREATED));
+		$this->assertSame(1, $this->mapper->countByOwnerShareId('', '6', AttachmentShare::ORIGIN_ADOPTED));
+		$this->assertSame(1, $this->mapper->countByOwnerShareId('', '11'));
+		$this->assertSame(0, $this->mapper->countByOwnerShareId('', '12'));
+		$this->assertSame(0, $this->mapper->countByOwnerShareId('https://nc2.test', '6'));
 	}
 }

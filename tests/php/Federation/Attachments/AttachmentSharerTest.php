@@ -138,8 +138,52 @@ class AttachmentSharerTest extends TestCase {
 					&& $row->getOwnerActorId() === 'paul'
 					&& $row->getRecipientActorType() === Attendee::ACTOR_FEDERATED_USERS
 					&& $row->getRecipientActorId() === 'bill@nc2.test'
-					&& $row->getShareId() === '6';
+					&& $row->getShareId() === '6'
+					&& $row->getOrigin() === AttachmentShare::ORIGIN_CREATED;
 			}));
+
+		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare));
+	}
+
+	private function existingRemoteShare(string $cloudId, string $shareId): IShare&MockObject {
+		$existing = $this->createMock(IShare::class);
+		$existing->method('getSharedWith')->willReturn($cloudId);
+		$existing->method('getId')->willReturn($shareId);
+		return $existing;
+	}
+
+	public function testUsersOwnFederatedShareIsAdopted(): void {
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->mapper->method('findForRecipient')->willReturn(null);
+		$this->shareManager->method('getSharesBy')
+			->with('paul', IShare::TYPE_REMOTE, $this->sharedFolder, false, -1)
+			->willReturn([$this->existingRemoteShare('carol@nc3.test', '2'), $this->existingRemoteShare('bill@nc2.test', '3')]);
+		// Paul shared the folder with Bill himself: no Talk row uses it
+		$this->mapper->method('countByOwnerShareId')->with('', '3', AttachmentShare::ORIGIN_CREATED)->willReturn(0);
+		$this->shareManager->expects($this->never())->method('createShare');
+		$this->mapper->expects($this->once())
+			->method('insert')
+			->with($this->callback(fn (AttachmentShare $row): bool => $row->getShareId() === '3'
+				&& $row->getOrigin() === AttachmentShare::ORIGIN_ADOPTED));
+
+		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare));
+	}
+
+	public function testShareTalkCreatedForAnotherSourceStaysCreated(): void {
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->mapper->method('findForRecipient')->willReturn(null);
+		$this->shareManager->method('getSharesBy')->willReturn([$this->existingRemoteShare('bill@nc2.test', '3')]);
+		// Talk created share 3 for the same file in another conversation
+		$this->mapper->method('countByOwnerShareId')->with('', '3', AttachmentShare::ORIGIN_CREATED)->willReturn(1);
+		$this->shareManager->expects($this->never())->method('createShare');
+		$this->mapper->expects($this->once())
+			->method('insert')
+			->with($this->callback(fn (AttachmentShare $row): bool => $row->getShareId() === '3'
+				&& $row->getOrigin() === AttachmentShare::ORIGIN_CREATED));
 
 		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare));
 	}
@@ -203,17 +247,72 @@ class AttachmentSharerTest extends TestCase {
 		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare, null, true));
 	}
 
-	public function testUnshareForRecipient(): void {
+	private function row(string $shareId, string $origin): AttachmentShare {
 		$row = new AttachmentShare();
-		$row->setShareId('6');
+		$row->setShareId($shareId);
+		$row->setOrigin($origin);
+		return $row;
+	}
+
+	public function testUnshareForRecipient(): void {
+		$row = $this->row('6', AttachmentShare::ORIGIN_CREATED);
 		$this->mapper->method('findByRecipient')
 			->with(12, Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test')
 			->willReturn([$row]);
+		$this->mapper->method('countByOwnerShareId')->with('', '6')->willReturn(0);
 		$remoteShare = $this->createMock(IShare::class);
 		$this->shareManager->method('getShareById')->with('ocFederatedSharing:6')->willReturn($remoteShare);
 		$this->shareManager->expects($this->once())->method('deleteShare')->with($remoteShare);
 		$this->mapper->expects($this->once())->method('delete')->with($row);
 
 		$this->sharer->unshareForRecipient($this->room, 'bill@nc2.test');
+	}
+
+	public function testAdoptedShareIsNeverDeleted(): void {
+		$row = $this->row('3', AttachmentShare::ORIGIN_ADOPTED);
+		$this->mapper->method('findBySource')
+			->with(12, AttachmentShare::SOURCE_ROOM_SHARE, '5')
+			->willReturn([$row]);
+		$this->mapper->method('countByOwnerShareId')->willReturn(0);
+		$this->mapper->expects($this->once())->method('delete')->with($row);
+		$this->shareManager->expects($this->never())->method('getShareById');
+		$this->shareManager->expects($this->never())->method('deleteShare');
+
+		$this->sharer->unshareRoomShare($this->room, '5');
+	}
+
+	public function testCreatedShareStillUsedElsewhereIsKept(): void {
+		$row = $this->row('6', AttachmentShare::ORIGIN_CREATED);
+		$this->mapper->method('findByRoom')->with(12)->willReturn([$row]);
+		// e.g. the same file shared into another conversation with Bill
+		$this->mapper->method('countByOwnerShareId')->with('', '6')->willReturn(1);
+		$this->mapper->expects($this->once())->method('delete')->with($row);
+		$this->shareManager->expects($this->never())->method('deleteShare');
+
+		$this->sharer->unshareRoom($this->room);
+	}
+
+	public function testCreatedShareIsDeletedAfterItsLastRow(): void {
+		$row = $this->row('6', AttachmentShare::ORIGIN_CREATED);
+		$this->mapper->method('findBySource')->willReturn([$row]);
+		$rowDeleted = false;
+		$this->mapper->expects($this->once())
+			->method('delete')
+			->with($row)
+			->willReturnCallback(function (AttachmentShare $row) use (&$rowDeleted): AttachmentShare {
+				$rowDeleted = true;
+				return $row;
+			});
+		// Counted after this row is gone
+		$this->mapper->method('countByOwnerShareId')
+			->with('', '6')
+			->willReturnCallback(function () use (&$rowDeleted): int {
+				return $rowDeleted ? 0 : 1;
+			});
+		$remoteShare = $this->createMock(IShare::class);
+		$this->shareManager->method('getShareById')->with('ocFederatedSharing:6')->willReturn($remoteShare);
+		$this->shareManager->expects($this->once())->method('deleteShare')->with($remoteShare);
+
+		$this->sharer->unshareRoomShare($this->room, '5');
 	}
 }

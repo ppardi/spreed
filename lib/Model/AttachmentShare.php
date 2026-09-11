@@ -33,6 +33,8 @@ use OCP\DB\Types;
  * @method string getRecipientActorId()
  * @method void setShareId(string $shareId)
  * @method string getShareId()
+ * @method void setOrigin(string $origin)
+ * @method string|null getOrigin()
  * @method void setCreatedAt(\DateTime $createdAt)
  * @method \DateTime|null getCreatedAt()
  */
@@ -41,6 +43,11 @@ class AttachmentShare extends Entity {
 	public const SOURCE_ROOM_SHARE = 'room_share';
 	/** Source is a sender folder on a remote participant's server (Plan 2) */
 	public const SOURCE_REMOTE_FOLDER = 'remote_folder';
+
+	/** Talk created the federated share, so Talk removes it again when nothing uses it anymore */
+	public const ORIGIN_CREATED = 'created';
+	/** The federated share existed already (e.g. the user shared the file themselves): Talk never removes it */
+	public const ORIGIN_ADOPTED = 'adopted';
 
 	protected int $roomId = 0;
 	protected string $sourceType = '';
@@ -51,6 +58,7 @@ class AttachmentShare extends Entity {
 	protected string $recipientActorType = '';
 	protected string $recipientActorId = '';
 	protected string $shareId = '';
+	protected ?string $origin = null;
 	protected ?\DateTime $createdAt = null;
 
 	public function __construct() {
@@ -63,6 +71,7 @@ class AttachmentShare extends Entity {
 		$this->addType('recipientActorType', Types::STRING);
 		$this->addType('recipientActorId', Types::STRING);
 		$this->addType('shareId', Types::STRING);
+		$this->addType('origin', Types::STRING);
 		$this->addType('createdAt', Types::DATETIME);
 	}
 }

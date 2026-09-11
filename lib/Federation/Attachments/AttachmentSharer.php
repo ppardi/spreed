@@ -148,10 +148,11 @@ class AttachmentSharer {
 			return true;
 		}
 
-		$shareId = $this->findOrCreateFederatedShare($node, $sharedBy, $cloudId);
-		if ($shareId === null) {
+		$federatedShare = $this->findOrCreateFederatedShare($node, $sharedBy, $cloudId);
+		if ($federatedShare === null) {
 			return false;
 		}
+		[$shareId, $origin] = $federatedShare;
 
 		$row = new AttachmentShare();
 		$row->setRoomId($room->getId());
@@ -163,6 +164,7 @@ class AttachmentSharer {
 		$row->setRecipientActorType(Attendee::ACTOR_FEDERATED_USERS);
 		$row->setRecipientActorId($cloudId);
 		$row->setShareId($shareId);
+		$row->setOrigin($origin);
 		$row->setCreatedAt($this->timeFactory->getDateTime());
 		try {
 			$this->mapper->insert($row);
@@ -184,10 +186,17 @@ class AttachmentSharer {
 		}
 	}
 
-	private function findOrCreateFederatedShare(Node $node, string $sharedBy, string $cloudId): ?string {
+	/**
+	 * @return array{0: string, 1: string}|null Share id and origin (AttachmentShare::ORIGIN_*), null on failure
+	 */
+	private function findOrCreateFederatedShare(Node $node, string $sharedBy, string $cloudId): ?array {
 		foreach ($this->shareManager->getSharesBy($sharedBy, IShare::TYPE_REMOTE, $node, false, -1) as $existing) {
 			if ($existing->getSharedWith() === $cloudId) {
-				return $existing->getId();
+				$shareId = $existing->getId();
+				// Reusing a share Talk created for another source (the same file in another conversation)
+				// keeps it Talk's, anything else (e.g. the user's own share) must never be removed by Talk
+				$createdByTalk = $this->mapper->countByOwnerShareId('', $shareId, AttachmentShare::ORIGIN_CREATED) > 0;
+				return [$shareId, $createdByTalk ? AttachmentShare::ORIGIN_CREATED : AttachmentShare::ORIGIN_ADOPTED];
 			}
 		}
 
@@ -199,14 +208,24 @@ class AttachmentSharer {
 			->setPermissions(Constants::PERMISSION_READ);
 
 		try {
-			return $this->shareManager->createShare($share)->getId();
+			return [$this->shareManager->createShare($share)->getId(), AttachmentShare::ORIGIN_CREATED];
 		} catch (\Exception $e) {
 			$this->logger->warning('Could not share conversation attachment with ' . $cloudId, ['exception' => $e]);
 			return null;
 		}
 	}
 
+	/**
+	 * Removes the row, and the federated share when Talk created it and no other row uses it anymore
+	 * (the same federated share can serve several sources, e.g. one file shared into two conversations)
+	 */
 	private function removeShareAndRow(AttachmentShare $row): void {
+		$this->mapper->delete($row);
+		if ($row->getOrigin() !== AttachmentShare::ORIGIN_CREATED
+			|| $this->mapper->countByOwnerShareId('', $row->getShareId()) > 0) {
+			return;
+		}
+
 		try {
 			$share = $this->shareManager->getShareById(self::FEDERATED_SHARE_PREFIX . $row->getShareId());
 			$this->shareManager->deleteShare($share);
@@ -215,7 +234,5 @@ class AttachmentSharer {
 		} catch (\Exception $e) {
 			$this->logger->warning('Could not remove federated attachment share ' . $row->getShareId(), ['exception' => $e]);
 		}
-		// Deleting the share may already have removed the row via ShareDeletedEvent; deleting again is a no-op
-		$this->mapper->delete($row);
 	}
 }

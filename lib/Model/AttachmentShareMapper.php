@@ -78,11 +78,35 @@ class AttachmentShareMapper extends QBMapper {
 
 	/**
 	 * @param string $ownerServer '' for shares created by this server
+	 * @param string|null $origin Only count rows with this origin (AttachmentShare::ORIGIN_*)
+	 */
+	public function countByOwnerShareId(string $ownerServer, string $shareId, ?string $origin = null): int {
+		$query = $this->db->getQueryBuilder();
+		$query->select($query->func()->count('*', 'num_rows'))
+			->from($this->getTableName());
+		$this->whereOwnerShareId($query, $ownerServer, $shareId);
+		if ($origin !== null) {
+			$query->andWhere($query->expr()->eq('origin', $query->createNamedParameter($origin)));
+		}
+
+		$result = $query->executeQuery();
+		$count = (int)$result->fetchOne();
+		$result->closeCursor();
+		return $count;
+	}
+
+	/**
+	 * @param string $ownerServer '' for shares created by this server
 	 */
 	public function deleteByOwnerShareId(string $ownerServer, string $shareId): void {
 		$query = $this->db->getQueryBuilder();
-		$query->delete($this->getTableName())
-			->where($query->expr()->eq('share_id', $query->createNamedParameter($shareId)));
+		$query->delete($this->getTableName());
+		$this->whereOwnerShareId($query, $ownerServer, $shareId);
+		$query->executeStatement();
+	}
+
+	private function whereOwnerShareId(IQueryBuilder $query, string $ownerServer, string $shareId): void {
+		$query->where($query->expr()->eq('share_id', $query->createNamedParameter($shareId)));
 		if ($ownerServer === '') {
 			$query->andWhere($query->expr()->orX(
 				$query->expr()->eq('owner_server', $query->createNamedParameter('')),
@@ -91,6 +115,5 @@ class AttachmentShareMapper extends QBMapper {
 		} else {
 			$query->andWhere($query->expr()->eq('owner_server', $query->createNamedParameter($ownerServer)));
 		}
-		$query->executeStatement();
 	}
 }
