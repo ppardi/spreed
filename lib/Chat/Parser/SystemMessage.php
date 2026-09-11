@@ -21,6 +21,7 @@ use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Share\Helper\FilesMetadataCache;
+use OCA\Talk\Share\Helper\RoomShareLocator;
 use OCA\Talk\Share\RoomShareProvider;
 use OCP\AppFramework\Services\IAppConfig;
 use OCP\Comments\IComment;
@@ -82,6 +83,7 @@ class SystemMessage implements IEventListener {
 		private readonly FilesMetadataCache $metadataCache,
 		private readonly Authenticator $federationAuthenticator,
 		private readonly IEventDispatcher $dispatcher,
+		private readonly RoomShareLocator $roomShareLocator,
 	) {
 	}
 
@@ -929,41 +931,13 @@ class SystemMessage implements IEventListener {
 	 * @return array{0: ?string, 1: string}
 	 */
 	private function resolvePublicShareForNode(Room $room, Node $node): array {
-		$roomToken = $room->getToken();
-		$shareToken = null;
-		$shareFolder = null;
-
-		$current = $node;
-		for ($depth = 0; $depth < 10; $depth++) {
-			try {
-				$parent = $current->getParent();
-			} catch (NotFoundException) {
-				break;
-			}
-			if ($parent === $current) {
-				break;
-			}
-			foreach ($this->shareProvider->getSharesByPath($parent) as $share) {
-				if ($share->getSharedWith() === $roomToken) {
-					$shareToken = $share->getToken();
-					$shareFolder = $parent;
-					break 2;
-				}
-			}
-			$current = $parent;
-		}
-
-		if ($shareToken === null || $shareFolder === null) {
+		[$share, $pathInShare] = $this->roomShareLocator->findForNode($room, $node);
+		if ($share === null) {
 			return [null, ''];
 		}
 
-		$relative = substr($node->getPath(), strlen($shareFolder->getPath()));
-		$dir = dirname($relative);
-		if ($dir === '' || $dir === '.') {
-			$dir = '/';
-		}
-
-		return [$shareToken, $dir];
+		$dir = dirname('/' . $pathInShare);
+		return [$share->getToken(), $dir === '.' ? '/' : $dir];
 	}
 
 	/**

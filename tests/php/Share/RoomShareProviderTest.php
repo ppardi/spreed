@@ -183,4 +183,13 @@ class RoomShareProviderTest extends TestCase {
 		$this->assertTrue($this->shareExists($userShare));
 		$this->assertFalse($this->shareExists($userRoomShare));
 	}
+
+	public function testGetShareIdsInRoom(): void {
+		$first = $this->createShare(IShare::TYPE_ROOM, 'roomToken');
+		$second = $this->createShare(IShare::TYPE_ROOM, 'roomToken');
+		$this->createShare(IShare::TYPE_ROOM, 'otherRoomToken');
+		$this->createShare(RoomShareProvider::SHARE_TYPE_USERROOM, 'participant1', $first);
+
+		$this->assertSame([$first, $second], $this->provider->getShareIdsInRoom('roomToken'));
+	}
 }

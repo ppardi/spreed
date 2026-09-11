@@ -20,6 +20,7 @@ use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Share\Helper\FilesMetadataCache;
+use OCA\Talk\Share\Helper\RoomShareLocator;
 use OCA\Talk\Share\RoomShareProvider;
 use OCP\AppFramework\Services\IAppConfig;
 use OCP\Comments\IComment;
@@ -108,6 +109,7 @@ class SystemMessageTest extends TestCase {
 					$this->filesMetadataCache,
 					$this->federationAuthenticator,
 					$this->dispatcher,
+					new RoomShareLocator($this->shareProvider),
 				])
 				->onlyMethods($methods)
 				->getMock();
@@ -128,6 +130,7 @@ class SystemMessageTest extends TestCase {
 			$this->filesMetadataCache,
 			$this->federationAuthenticator,
 			$this->dispatcher,
+			new RoomShareLocator($this->shareProvider),
 		);
 	}
 
