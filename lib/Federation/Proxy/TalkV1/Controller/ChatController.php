@@ -281,7 +281,7 @@ class ChatController {
 
 		$result = [];
 		foreach ($data as $type => $items) {
-			$result[$type] = array_values($this->userConverter->convertMessages($room, $items));
+			$result[$type] = $this->fileConverter->convertMessages($room, $participant, $this->userConverter->convertMessages($room, $items));
 		}
 
 		/** @var array<string, list<TalkChatMessage>> $result */
@@ -313,8 +313,12 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_OK, Http::STATUS_NOT_ACCEPTABLE]);
 		/** @var array<string, TalkChatMessage> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
+		$result = [];
+		foreach ($data as $key => $item) {
+			$result[$key] = $this->fileConverter->convertMessage($room, $participant, $item);
+		}
 
-		return new DataResponse($data, Http::STATUS_OK);
+		return new DataResponse($result, Http::STATUS_OK);
 	}
 
 	/**
