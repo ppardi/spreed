@@ -281,7 +281,7 @@ class ChatController {
 
 		$result = [];
 		foreach ($data as $type => $items) {
-			$result[$type] = $this->fileConverter->convertMessages($room, $participant, $this->userConverter->convertMessages($room, $items));
+			$result[$type] = array_values($this->fileConverter->convertMessages($room, $participant, $this->userConverter->convertMessages($room, $items)));
 		}
 
 		/** @var array<string, list<TalkChatMessage>> $result */
