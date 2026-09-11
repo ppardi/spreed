@@ -23,6 +23,9 @@ use Psr\Log\LoggerInterface;
  * Finds the local copy of a federated attachment in the user's received federated share
  */
 class LocalFileResolver {
+	/** @var array<string, true> Users whose mounts were already refreshed in this process */
+	private array $refreshedUsers = [];
+
 	public function __construct(
 		private readonly ReceivedShareLookup $lookup,
 		private readonly IRootFolder $rootFolder,
@@ -52,7 +55,7 @@ class LocalFileResolver {
 				return $this->resolveNode($userId, $mountPoint, $path, $targetFolder);
 			} catch (NotFoundException $e) {
 				// Right after accepting the share, the mount may not be visible yet in this
-				// request's filesystem setup: refresh it once and retry the same lookup.
+				// request's filesystem setup: refresh it (once per user and process) and retry the same lookup.
 				if (!$this->refreshMounts($userId)) {
 					throw $e;
 				}
@@ -62,7 +65,7 @@ class LocalFileResolver {
 			return null;
 		} catch (\Throwable $e) {
 			// e.g. the remote storage is unavailable
-			$this->logger->debug('Could not resolve federated attachment for ' . $userId, ['exception' => $e]);
+			$this->logger->info('Could not resolve federated attachment for ' . $userId, ['exception' => $e]);
 			return null;
 		}
 	}
@@ -82,9 +85,16 @@ class LocalFileResolver {
 	}
 
 	/**
-	 * @return bool Whether the refresh was performed (false when the user no longer exists or setup failed)
+	 * @return bool Whether the refresh was performed (false when it already happened in this process,
+	 *              the user no longer exists or setup failed)
 	 */
 	private function refreshMounts(string $userId): bool {
+		if (isset($this->refreshedUsers[$userId])) {
+			// A file that is still missing after a refresh was deleted: don't set everything up again for each message
+			return false;
+		}
+		$this->refreshedUsers[$userId] = true;
+
 		$user = $this->userManager->get($userId);
 		if ($user === null) {
 			return false;

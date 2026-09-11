@@ -30,6 +30,7 @@ class LocalFileResolverTest extends TestCase {
 	protected IConfig&MockObject $config;
 	protected ISetupManager&MockObject $setupManager;
 	protected IUserManager&MockObject $userManager;
+	protected LoggerInterface&MockObject $logger;
 	protected LocalFileResolver $resolver;
 
 	public function setUp(): void {
@@ -45,7 +46,8 @@ class LocalFileResolverTest extends TestCase {
 		$this->config->method('getUserValue')->with('bill', 'files_sharing', 'share_folder', '/')->willReturn('/');
 		$this->setupManager = $this->createMock(ISetupManager::class);
 		$this->userManager = $this->createMock(IUserManager::class);
-		$this->resolver = new LocalFileResolver($this->lookup, $this->rootFolder, $this->config, $this->setupManager, $this->userManager, $this->createMock(LoggerInterface::class));
+		$this->logger = $this->createMock(LoggerInterface::class);
+		$this->resolver = new LocalFileResolver($this->lookup, $this->rootFolder, $this->config, $this->setupManager, $this->userManager, $this->logger);
 	}
 
 	public function testNoShare(): void {
@@ -187,5 +189,25 @@ class LocalFileResolverTest extends TestCase {
 
 		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'photo1.jpg', null));
 		$this->assertSame(1, $calls, 'get() should be called exactly once; after refresh attempt fails, no retry');
+	}
+
+	public function testMountsAreRefreshedOnlyOncePerUser(): void {
+		// e.g. several messages whose files were deleted inside a folder that is still shared
+		$this->lookup->method('findAccepted')->willReturn('/Room-both-wqhg8fxn');
+		$user = $this->createMock(IUser::class);
+		$this->userManager->method('get')->with('bill')->willReturn($user);
+		$this->setupManager->expects($this->once())->method('tearDown');
+		$this->setupManager->expects($this->once())->method('setupForUser')->with($user);
+		$this->userFolder->method('get')->willThrowException(new NotFoundException());
+
+		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'deleted1.jpg', null));
+		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'deleted2.jpg', null));
+	}
+
+	public function testUnexpectedFailuresAreLogged(): void {
+		$this->lookup->method('findAccepted')->willThrowException(new \RuntimeException('Remote storage unavailable'));
+		$this->logger->expects($this->once())->method('info');
+
+		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'photo1.jpg', null));
 	}
 }
