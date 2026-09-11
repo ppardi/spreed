@@ -107,6 +107,11 @@ class AttachmentSharer {
 	 * @return list<string> Cloud ids of accepted federated participants whose server supports attachments
 	 */
 	private function getRecipients(Room $room, ?string $onlyCloudId, bool $refreshDiscovery): array {
+		if ($room->getType() === Room::TYPE_PUBLIC) {
+			// Public conversations keep the behaviour without federated attachments (the renderer skips them too)
+			return [];
+		}
+
 		$recipients = [];
 		foreach ($this->participantService->getParticipantsByActorType($room, Attendee::ACTOR_FEDERATED_USERS) as $participant) {
 			$attendee = $participant->getAttendee();

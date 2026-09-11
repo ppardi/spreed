@@ -145,6 +145,23 @@ class AttachmentSharerTest extends TestCase {
 		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare));
 	}
 
+	public function testNoSharesForPublicConversations(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getId')->willReturn(12);
+		$room->method('getToken')->willReturn('wqhg8fxn');
+		$room->method('getType')->willReturn(Room::TYPE_PUBLIC);
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->roomShareProvider->method('getShareIdsInRoom')->willReturn(['5']);
+		$this->roomShareProvider->method('getSharesByIds')->willReturn([$this->roomShare]);
+		$this->shareManager->expects($this->never())->method('createShare');
+		$this->mapper->expects($this->never())->method('insert');
+
+		$this->assertTrue($this->sharer->shareRoomShare($room, $this->roomShare));
+		$this->assertTrue($this->sharer->shareAllRoomShares($room));
+	}
+
 	private function existingRemoteShare(string $cloudId, string $shareId): IShare&MockObject {
 		$existing = $this->createMock(IShare::class);
 		$existing->method('getSharedWith')->willReturn($cloudId);
