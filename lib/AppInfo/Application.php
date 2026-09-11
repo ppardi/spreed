@@ -321,10 +321,11 @@ class Application extends App implements IBootstrap {
 		$context->registerEventListener(RoomModifiedEvent::class, TalkV1RoomModifiedListener::class);
 		$context->registerEventListener(ChatMessageSentEvent::class, TalkV1MessageSentListener::class);
 		$context->registerEventListener(SystemMessageSentEvent::class, TalkV1MessageSentListener::class);
-		// Federated attachments (host side)
-		$context->registerEventListener(ShareCreatedEvent::class, FederatedAttachmentsListener::class);
+		// Federated attachments (host side). Priority 10: share the file before the "file_shared" message
+		// is posted (SystemMessageListener) and before remote servers are notified (TalkV1MessageSentListener)
+		$context->registerEventListener(ShareCreatedEvent::class, FederatedAttachmentsListener::class, 10);
 		$context->registerEventListener(ShareDeletedEvent::class, FederatedAttachmentsListener::class);
-		$context->registerEventListener(SystemMessageSentEvent::class, FederatedAttachmentsListener::class);
+		$context->registerEventListener(SystemMessageSentEvent::class, FederatedAttachmentsListener::class, 10);
 		$context->registerEventListener(AttendeesAddedEvent::class, FederatedAttachmentsListener::class);
 		$context->registerEventListener(AttendeeRemovedEvent::class, FederatedAttachmentsListener::class);
 		$context->registerEventListener(BeforeRoomDeletedEvent::class, FederatedAttachmentsListener::class);
