@@ -146,6 +146,7 @@ class FeatureContext implements Context, SnippetAcceptingContext {
 
 	use CommandLineTrait;
 	use RecordingTrait;
+	use FederatedAttachmentsTrait;
 
 	public static function getTokenForIdentifier(string $identifier): string {
 		return self::$identifierToToken[$identifier];
@@ -307,7 +308,7 @@ class FeatureContext implements Context, SnippetAcceptingContext {
 		}
 		$this->currentServer = $server;
 
-		$this->sharingContext->setCurrentServer($this->currentServer, $this->localServerUrl);
+		$this->sharingContext->setCurrentServer($this->currentServer, $this->baseUrl);
 	}
 
 	#[Then('/^user "([^"]*)" cannot find any listed rooms \((v4)\)$/')]
