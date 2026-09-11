@@ -208,7 +208,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy);
 		/** @var list<TalkChatMessageWithParent> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
-		$data = $this->fileConverter->convertMessages($room, $participant, $data);
+		$data = array_values($this->fileConverter->convertMessages($room, $participant, $data));
 
 		return new DataResponse($data, Http::STATUS_OK, $headers);
 	}
@@ -252,7 +252,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy);
 		/** @var list<TalkChatMessageWithParent> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
-		$data = $this->fileConverter->convertMessages($room, $participant, $data);
+		$data = array_values($this->fileConverter->convertMessages($room, $participant, $data));
 
 		return new DataResponse($data, Http::STATUS_OK, $headers);
 	}

@@ -37,8 +37,8 @@ class FederatedFileConverter {
 	}
 
 	/**
-	 * @param list<array> $messages
-	 * @return list<array>
+	 * @param array<array-key, array> $messages
+	 * @return array<array-key, array>
 	 */
 	public function convertMessages(Room $room, Participant $participant, array $messages): array {
 		return array_map(
