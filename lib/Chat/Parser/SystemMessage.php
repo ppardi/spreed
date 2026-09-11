@@ -15,6 +15,9 @@ use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Events\MessageParseEvent;
 use OCA\Talk\Events\OverwritePublicSharePropertiesEvent;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Federation\Attachments\FederatedFileReference;
+use OCA\Talk\Model\AttachmentShare;
+use OCA\Talk\Model\AttachmentShareMapper;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Participant;
@@ -84,6 +87,7 @@ class SystemMessage implements IEventListener {
 		private readonly Authenticator $federationAuthenticator,
 		private readonly IEventDispatcher $dispatcher,
 		private readonly RoomShareLocator $roomShareLocator,
+		private readonly AttachmentShareMapper $attachmentShareMapper,
 	) {
 	}
 
@@ -555,12 +559,7 @@ class SystemMessage implements IEventListener {
 				}
 			} catch (\Exception) {
 				$chatMessage->setMessageType(ChatManager::VERB_MESSAGE);
-				$parsedMessage = $this->l->t('{actor} shared a file which is no longer available');
-				if ($currentUserIsActor) {
-					$parsedMessage = $this->l->t('You shared a file which is no longer available');
-				} elseif ($currentActorType === Attendee::ACTOR_FEDERATED_USERS) {
-					$parsedMessage = $this->l->t('File shares are currently not supported in federated conversations');
-				}
+				$parsedMessage = $this->getUnavailableFileMessage($currentUserIsActor, $currentActorType);
 				$parsedMessage = '*' . $parsedMessage . '*';
 
 				$metaData = $parameters['metaData'] ?? [];
@@ -812,6 +811,38 @@ class SystemMessage implements IEventListener {
 	}
 
 	/**
+	 * Id of the federated share (on this server) through which the federated viewer receives the room share
+	 *
+	 * @throws ShareNotFound when the viewer did not receive it (yet)
+	 */
+	protected function getFederatedShareId(Room $room, Participant $participant, string $roomShareId): string {
+		$row = $this->attachmentShareMapper->findForRecipient(
+			$room->getId(),
+			AttachmentShare::SOURCE_ROOM_SHARE,
+			$roomShareId,
+			Attendee::ACTOR_FEDERATED_USERS,
+			$participant->getAttendee()->getActorId(),
+		);
+		if ($row === null) {
+			throw new ShareNotFound();
+		}
+		return $row->getShareId();
+	}
+
+	protected function getUnavailableFileMessage(bool $currentUserIsActor, ?string $currentActorType): string {
+		if ($currentUserIsActor) {
+			return $this->l->t('You shared a file which is no longer available');
+		}
+		if ($currentActorType === Attendee::ACTOR_FEDERATED_USERS) {
+			if ($this->federationAuthenticator->supportsFederatedAttachments()) {
+				return $this->l->t('{actor} shared a file which is not available yet');
+			}
+			return $this->l->t('File shares are currently not supported in federated conversations');
+		}
+		return $this->l->t('{actor} shared a file which is no longer available');
+	}
+
+	/**
 	 * Build the same file-metadata array as getFileFromShare() but starting
 	 * from a node ID rather than a share ID.
 	 *
@@ -823,6 +854,8 @@ class SystemMessage implements IEventListener {
 	 * @throws ShareNotFound
 	 */
 	protected function getFileFromNodeId(Room $room, ?Participant $participant, int $nodeId, bool $allowInaccurate = false): array {
+		$federatedShareId = null;
+		$pathInShare = '';
 		if ($participant && $participant->getAttendee()->getActorType() === Attendee::ACTOR_USERS) {
 			if ($allowInaccurate) {
 				// Lightweight lookup: search the filecache directly without setting up the user
@@ -857,7 +890,25 @@ class SystemMessage implements IEventListener {
 				'fileid' => $node->getId(),
 			]);
 		} elseif ($participant && $room->getType() !== Room::TYPE_PUBLIC && $participant->getAttendee()->getActorType() === Attendee::ACTOR_FEDERATED_USERS) {
-			throw new ShareNotFound();
+			if (!$this->federationAuthenticator->supportsFederatedAttachments()) {
+				throw new ShareNotFound();
+			}
+
+			$node = $this->rootFolder->getFirstNodeById($nodeId);
+			if (!$node instanceof Node) {
+				throw new NotFoundException('File node ' . $nodeId . ' not found');
+			}
+
+			[$roomShare, $pathInShare] = $this->roomShareLocator->findForNode($room, $node);
+			if ($roomShare === null) {
+				throw new ShareNotFound();
+			}
+			$federatedShareId = $this->getFederatedShareId($room, $participant, $roomShare->getId());
+
+			$name = $node->getName();
+			$size = $node->getSize();
+			$path = $name;
+			$url = '';
 		} else {
 			$node = $this->rootFolder->getFirstNodeById($nodeId);
 			if (!$node instanceof Node) {
@@ -915,6 +966,10 @@ class SystemMessage implements IEventListener {
 			}
 		}
 
+		if ($federatedShareId !== null) {
+			return FederatedFileReference::forShare($data, $this->url->getAbsoluteURL('/'), $federatedShareId, $pathInShare);
+		}
+
 		return $data;
 	}
 
@@ -947,6 +1002,7 @@ class SystemMessage implements IEventListener {
 	 */
 	protected function getFileFromShare(Room $room, ?Participant $participant, string $shareId, bool $allowInaccurate): array {
 		$share = $this->shareProvider->getShareById($shareId);
+		$federatedShareId = null;
 
 		if ($participant && $participant->getAttendee()->getActorType() === Attendee::ACTOR_USERS) {
 			if ($allowInaccurate) {
@@ -1002,7 +1058,16 @@ class SystemMessage implements IEventListener {
 				'fileid' => $node->getId(),
 			]);
 		} elseif ($participant && $room->getType() !== Room::TYPE_PUBLIC && $participant->getAttendee()->getActorType() === Attendee::ACTOR_FEDERATED_USERS) {
-			throw new ShareNotFound();
+			if (!$this->federationAuthenticator->supportsFederatedAttachments()) {
+				throw new ShareNotFound();
+			}
+
+			$node = $share->getNode();
+			$federatedShareId = $this->getFederatedShareId($room, $participant, $share->getId());
+			$name = $node->getName();
+			$size = $node->getSize();
+			$path = $name;
+			$url = '';
 		} else {
 			if ($allowInaccurate) {
 				$node = $share->getNodeCacheEntry();
@@ -1055,6 +1120,10 @@ class SystemMessage implements IEventListener {
 				}
 			} catch (FilesMetadataNotFoundException) {
 			}
+		}
+
+		if ($federatedShareId !== null) {
+			return FederatedFileReference::forShare($data, $this->url->getAbsoluteURL('/'), $federatedShareId, '');
 		}
 
 		if ($node instanceof FileInfo && $node->getMimeType() === 'text/vcard') {
