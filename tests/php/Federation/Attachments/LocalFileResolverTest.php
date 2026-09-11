@@ -167,4 +167,25 @@ class LocalFileResolverTest extends TestCase {
 		$this->userFolder->method('get')->willThrowException(new NotFoundException());
 		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'deleted.jpg', null));
 	}
+
+	public function testSetupForUserThrowingReturnsNullWithoutThrowing(): void {
+		$this->lookup->method('findAccepted')->willReturn('/Room-both-wqhg8fxn');
+
+		$user = $this->createMock(IUser::class);
+		$this->userManager->method('get')->with('bill')->willReturn($user);
+		$this->setupManager->expects($this->once())->method('tearDown');
+		$this->setupManager->expects($this->once())->method('setupForUser')->with($user)
+			->willThrowException(new \RuntimeException('Could not re-setup'));
+
+		$calls = 0;
+		$this->userFolder->method('get')
+			->with('Room-both-wqhg8fxn/photo1.jpg')
+			->willReturnCallback(function () use (&$calls) {
+				$calls++;
+				throw new NotFoundException();
+			});
+
+		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'photo1.jpg', null));
+		$this->assertSame(1, $calls, 'get() should be called exactly once; after refresh attempt fails, no retry');
+	}
 }

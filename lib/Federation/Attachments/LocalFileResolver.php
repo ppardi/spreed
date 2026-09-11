@@ -82,7 +82,7 @@ class LocalFileResolver {
 	}
 
 	/**
-	 * @return bool Whether the refresh was performed (false when the user no longer exists)
+	 * @return bool Whether the refresh was performed (false when the user no longer exists or setup failed)
 	 */
 	private function refreshMounts(string $userId): bool {
 		$user = $this->userManager->get($userId);
@@ -90,7 +90,15 @@ class LocalFileResolver {
 			return false;
 		}
 		$this->setupManager->tearDown();
-		$this->setupManager->setupForUser($user);
+		try {
+			$this->setupManager->setupForUser($user);
+		} catch (\Throwable $e) {
+			// After tearDown(), Nextcloud sets the filesystem up again lazily on the next file access
+			// (server lib/private/Files/Node/Root.php get() → setupForPath()), so a failed re-setup here
+			// doesn't leave later code without a filesystem.
+			$this->logger->warning('Could not set up the filesystem again for ' . $userId, ['exception' => $e]);
+			return false;
+		}
 		return true;
 	}
 
