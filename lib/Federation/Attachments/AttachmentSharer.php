@@ -34,9 +34,6 @@ use Psr\Log\LoggerInterface;
 class AttachmentSharer {
 	private const FEDERATED_SHARE_PREFIX = 'ocFederatedSharing:';
 
-	/** @var array<string, bool> Remote server => supports federated attachments (for this process) */
-	private array $remoteSupport = [];
-
 	public function __construct(
 		private readonly IShareManager $shareManager,
 		private readonly RoomShareProvider $roomShareProvider,
@@ -56,11 +53,8 @@ class AttachmentSharer {
 	 * @return bool False when a share could not be created and a retry makes sense
 	 */
 	public function shareRoomShare(Room $room, IShare $roomShare, ?string $onlyCloudId = null, bool $refreshDiscovery = false): bool {
-		$success = true;
-		foreach ($this->getRecipients($room, $onlyCloudId, $refreshDiscovery) as $cloudId) {
-			$success = $this->ensureShare($room, $roomShare, $cloudId) && $success;
-		}
-		return $success;
+		[$recipients, $allServersKnown] = $this->getRecipients($room, $onlyCloudId, $refreshDiscovery);
+		return $this->shareWithRecipients($room, $roomShare, $recipients) && $allServersKnown;
 	}
 
 	/**
@@ -74,9 +68,13 @@ class AttachmentSharer {
 			return true;
 		}
 
-		$success = true;
+		[$recipients, $success] = $this->getRecipients($room, $onlyCloudId, $refreshDiscovery);
+		if ($recipients === []) {
+			return $success;
+		}
+
 		foreach ($this->roomShareProvider->getSharesByIds($ids) as $roomShare) {
-			$success = $this->shareRoomShare($room, $roomShare, $onlyCloudId, $refreshDiscovery) && $success;
+			$success = $this->shareWithRecipients($room, $roomShare, $recipients) && $success;
 		}
 		return $success;
 	}
@@ -104,15 +102,20 @@ class AttachmentSharer {
 	}
 
 	/**
-	 * @return list<string> Cloud ids of accepted federated participants whose server supports attachments
+	 * @return array{0: list<string>, 1: bool} Cloud ids of accepted federated participants whose server supports
+	 *                                         attachments, and false when a participant's server could not be
+	 *                                         reached (so whether to share with them is unknown: retry later)
 	 */
 	private function getRecipients(Room $room, ?string $onlyCloudId, bool $refreshDiscovery): array {
 		if ($room->getType() === Room::TYPE_PUBLIC) {
 			// Public conversations keep the behaviour without federated attachments (the renderer skips them too)
-			return [];
+			return [[], true];
 		}
 
 		$recipients = [];
+		$allServersKnown = true;
+		/** @var array<string, ?bool> $remoteSupport */
+		$remoteSupport = [];
 		foreach ($this->participantService->getParticipantsByActorType($room, Attendee::ACTOR_FEDERATED_USERS) as $participant) {
 			$attendee = $participant->getAttendee();
 			if ($attendee->getState() !== Invitation::STATE_ACCEPTED) {
@@ -127,12 +130,27 @@ class AttachmentSharer {
 			} catch (\InvalidArgumentException) {
 				continue;
 			}
-			$this->remoteSupport[$remote] ??= $this->featureSupport->remoteSupports($remote, $refreshDiscovery);
-			if ($this->remoteSupport[$remote]) {
+			if (!array_key_exists($remote, $remoteSupport)) {
+				$remoteSupport[$remote] = $this->featureSupport->remoteSupports($remote, $refreshDiscovery);
+			}
+			if ($remoteSupport[$remote] === null) {
+				$allServersKnown = false;
+			} elseif ($remoteSupport[$remote]) {
 				$recipients[] = $attendee->getActorId();
 			}
 		}
-		return $recipients;
+		return [$recipients, $allServersKnown];
+	}
+
+	/**
+	 * @param list<string> $recipients
+	 */
+	private function shareWithRecipients(Room $room, IShare $roomShare, array $recipients): bool {
+		$success = true;
+		foreach ($recipients as $cloudId) {
+			$success = $this->ensureShare($room, $roomShare, $cloudId) && $success;
+		}
+		return $success;
 	}
 
 	private function ensureShare(Room $room, IShare $roomShare, string $cloudId): bool {

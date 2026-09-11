@@ -251,7 +251,7 @@ class AttachmentSharerTest extends TestCase {
 		$this->assertFalse($this->sharer->shareRoomShare($this->room, $this->roomShare));
 	}
 
-	public function testRefreshDiscoveryIsPassedOnAndSupportIsRemembered(): void {
+	public function testRefreshDiscoveryIsPassedOn(): void {
 		$this->participantService->method('getParticipantsByActorType')
 			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
 		$this->featureSupport->expects($this->once())
@@ -260,8 +260,84 @@ class AttachmentSharerTest extends TestCase {
 			->willReturn(false);
 
 		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare, null, true));
-		// Second call in the same process: no new discovery request
-		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare, null, true));
+	}
+
+	public function testEachServerIsCheckedOncePerCall(): void {
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([
+				$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED),
+				$this->federatedParticipant('ben@nc2.test', Invitation::STATE_ACCEPTED),
+			]);
+		$this->featureSupport->expects($this->once())
+			->method('remoteSupports')
+			->with('nc2.test', false)
+			->willReturn(false);
+
+		$this->assertTrue($this->sharer->shareRoomShare($this->room, $this->roomShare));
+	}
+
+	public function testUnreachableServerMeansRetryWithoutTryingToShare(): void {
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([
+				$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED),
+				$this->federatedParticipant('dave@old.test', Invitation::STATE_ACCEPTED),
+			]);
+		// nc2.test could not be reached, old.test definitely doesn't support attachments
+		$this->featureSupport->method('remoteSupports')
+			->willReturnCallback(fn (string $remote): ?bool => $remote === 'nc2.test' ? null : false);
+		$this->shareManager->expects($this->never())->method('getSharesBy');
+		$this->shareManager->expects($this->never())->method('createShare');
+		$this->mapper->expects($this->never())->method('insert');
+
+		$this->assertFalse($this->sharer->shareRoomShare($this->room, $this->roomShare));
+	}
+
+	public function testOtherRecipientsAreSharedWithWhileOneServerIsUnreachable(): void {
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([
+				$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED),
+				$this->federatedParticipant('carol@nc3.test', Invitation::STATE_ACCEPTED),
+			]);
+		$this->featureSupport->method('remoteSupports')
+			->willReturnCallback(fn (string $remote): ?bool => $remote === 'nc2.test' ? null : true);
+		$this->mapper->method('findForRecipient')->willReturn(null);
+		$this->expectNewRemoteShare('carol@nc3.test', '7');
+		$this->mapper->expects($this->once())
+			->method('insert')
+			->with($this->callback(fn (AttachmentShare $row): bool => $row->getRecipientActorId() === 'carol@nc3.test'));
+
+		$this->assertFalse($this->sharer->shareRoomShare($this->room, $this->roomShare));
+	}
+
+	public function testRecipientsAreFoundOnceForAllRoomShares(): void {
+		$otherRoomShare = $this->createMock(IShare::class);
+		$otherRoomShare->method('getId')->willReturn('8');
+		$otherRoomShare->method('getSharedBy')->willReturn('paul');
+		$otherRoomShare->method('getNodeId')->willReturn(193);
+		$this->roomShareProvider->method('getShareIdsInRoom')->with('wqhg8fxn')->willReturn(['5', '8']);
+		$this->roomShareProvider->method('getSharesByIds')->with(['5', '8'])->willReturn([$this->roomShare, $otherRoomShare]);
+
+		$this->participantService->expects($this->once())
+			->method('getParticipantsByActorType')
+			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
+		$this->featureSupport->expects($this->once())->method('remoteSupports')->willReturn(true);
+		$row = new AttachmentShare();
+		$row->setShareId('6');
+		$this->mapper->expects($this->exactly(2))->method('findForRecipient')->willReturn($row);
+		$this->shareManager->method('getShareById')->willReturn($this->createMock(IShare::class));
+
+		$this->assertTrue($this->sharer->shareAllRoomShares($this->room));
+	}
+
+	public function testUnreachableServerMakesShareAllRoomSharesRetry(): void {
+		$this->roomShareProvider->method('getShareIdsInRoom')->willReturn(['5']);
+		$this->roomShareProvider->method('getSharesByIds')->willReturn([$this->roomShare]);
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturn([$this->federatedParticipant('bill@nc2.test', Invitation::STATE_ACCEPTED)]);
+		$this->featureSupport->method('remoteSupports')->willReturn(null);
+		$this->shareManager->expects($this->never())->method('createShare');
+
+		$this->assertFalse($this->sharer->shareAllRoomShares($this->room));
 	}
 
 	private function row(string $shareId, string $origin): AttachmentShare {
