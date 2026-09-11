@@ -16,6 +16,7 @@ use OCA\Talk\AppInfo\Application;
 use OCA\Talk\Config as TalkConfig;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\RemoteClientException;
+use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Participant;
 use OCA\Talk\Settings\UserPreference;
 use OCP\AppFramework\Http;
@@ -94,6 +95,7 @@ class ProxyRequest {
 				'X-Nextcloud-Federation' => 'true',
 				'OCS-APIRequest' => 'true',
 				'Accept-Language' => $this->l10nFactory->getUserLanguage($this->userSession->getUser()),
+				FeatureSupport::REQUEST_HEADER => '1',
 			],
 			'timeout' => 5,
 		];
