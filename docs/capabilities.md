@@ -232,3 +232,6 @@
 * `recording-chunked-upload` (local) - Whether the recording backend can request a temporary upload share to upload large recordings via chunked public WebDAV before finishing with the store endpoint
 * `config => call => external-call-service` (local) - The target URL for an external call service if one is configured
 * `bot-features-api` (local) - Whether bots can fetch their own enabled features using their shared secret
+
+## Unreleased (private build, heading to be set when ported upstream)
+* `federated-attachments` - Whether files can be shared in federated conversations. Clients should only offer attachments in a federated conversation when both the local server and the host server list the feature.

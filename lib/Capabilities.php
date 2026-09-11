@@ -135,6 +135,7 @@ class Capabilities implements IPublicCapability {
 		'private-reply',
 		'conversation-tags',
 		'bot-features-api',
+		'federated-attachments',
 	];
 
 	public const CONDITIONAL_FEATURES = [
