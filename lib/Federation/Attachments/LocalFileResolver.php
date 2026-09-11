@@ -11,10 +11,12 @@ namespace OCA\Talk\Federation\Attachments;
 
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
+use OCP\Files\ISetupManager;
 use OCP\Files\Node;
 use OCP\Files\NotFoundException;
 use OCP\Files\NotPermittedException;
 use OCP\IConfig;
+use OCP\IUserManager;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -25,6 +27,8 @@ class LocalFileResolver {
 		private readonly ReceivedShareLookup $lookup,
 		private readonly IRootFolder $rootFolder,
 		private readonly IConfig $config,
+		private readonly ISetupManager $setupManager,
+		private readonly IUserManager $userManager,
 		private readonly LoggerInterface $logger,
 	) {
 	}
@@ -42,15 +46,18 @@ class LocalFileResolver {
 			if ($mountPoint === null) {
 				return null;
 			}
-
-			$userFolder = $this->rootFolder->getUserFolder($userId);
 			$mountPoint = trim($mountPoint, '/');
-			if ($targetFolder !== null) {
-				$mountPoint = $this->moveIntoFolder($userFolder, $userId, $mountPoint, trim($targetFolder, '/'));
-			}
 
-			$relativePath = $path === '' ? $mountPoint : $mountPoint . '/' . ltrim($path, '/');
-			return $userFolder->get($relativePath);
+			try {
+				return $this->resolveNode($userId, $mountPoint, $path, $targetFolder);
+			} catch (NotFoundException $e) {
+				// Right after accepting the share, the mount may not be visible yet in this
+				// request's filesystem setup: refresh it once and retry the same lookup.
+				if (!$this->refreshMounts($userId)) {
+					throw $e;
+				}
+				return $this->resolveNode($userId, $mountPoint, $path, $targetFolder);
+			}
 		} catch (NotFoundException|NotPermittedException) {
 			return null;
 		} catch (\Throwable $e) {
@@ -58,6 +65,33 @@ class LocalFileResolver {
 			$this->logger->debug('Could not resolve federated attachment for ' . $userId, ['exception' => $e]);
 			return null;
 		}
+	}
+
+	/**
+	 * @throws NotFoundException
+	 * @throws NotPermittedException
+	 */
+	private function resolveNode(string $userId, string $mountPoint, string $path, ?string $targetFolder): Node {
+		$userFolder = $this->rootFolder->getUserFolder($userId);
+		if ($targetFolder !== null) {
+			$mountPoint = $this->moveIntoFolder($userFolder, $userId, $mountPoint, trim($targetFolder, '/'));
+		}
+
+		$relativePath = $path === '' ? $mountPoint : $mountPoint . '/' . ltrim($path, '/');
+		return $userFolder->get($relativePath);
+	}
+
+	/**
+	 * @return bool Whether the refresh was performed (false when the user no longer exists)
+	 */
+	private function refreshMounts(string $userId): bool {
+		$user = $this->userManager->get($userId);
+		if ($user === null) {
+			return false;
+		}
+		$this->setupManager->tearDown();
+		$this->setupManager->setupForUser($user);
+		return true;
 	}
 
 	/**

@@ -14,8 +14,11 @@ use OCA\Talk\Federation\Attachments\ReceivedShareLookup;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
+use OCP\Files\ISetupManager;
 use OCP\Files\NotFoundException;
 use OCP\IConfig;
+use OCP\IUser;
+use OCP\IUserManager;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
 use Test\TestCase;
@@ -25,6 +28,8 @@ class LocalFileResolverTest extends TestCase {
 	protected IRootFolder&MockObject $rootFolder;
 	protected Folder&MockObject $userFolder;
 	protected IConfig&MockObject $config;
+	protected ISetupManager&MockObject $setupManager;
+	protected IUserManager&MockObject $userManager;
 	protected LocalFileResolver $resolver;
 
 	public function setUp(): void {
@@ -38,7 +43,9 @@ class LocalFileResolverTest extends TestCase {
 		$this->config->method('getSystemValueBool')->with('sharing.allow_custom_share_folder', true)->willReturn(true);
 		$this->config->method('getSystemValueString')->with('share_folder', '/')->willReturn('/');
 		$this->config->method('getUserValue')->with('bill', 'files_sharing', 'share_folder', '/')->willReturn('/');
-		$this->resolver = new LocalFileResolver($this->lookup, $this->rootFolder, $this->config, $this->createMock(LoggerInterface::class));
+		$this->setupManager = $this->createMock(ISetupManager::class);
+		$this->userManager = $this->createMock(IUserManager::class);
+		$this->resolver = new LocalFileResolver($this->lookup, $this->rootFolder, $this->config, $this->setupManager, $this->userManager, $this->createMock(LoggerInterface::class));
 	}
 
 	public function testNoShare(): void {
@@ -50,8 +57,46 @@ class LocalFileResolverTest extends TestCase {
 		$file = $this->createMock(File::class);
 		$this->lookup->method('findAccepted')->willReturn('/Room-both-wqhg8fxn');
 		$this->userFolder->method('get')->with('Room-both-wqhg8fxn/photo1.jpg')->willReturn($file);
+		$this->setupManager->expects($this->never())->method('tearDown');
+		$this->setupManager->expects($this->never())->method('setupForUser');
 
 		$this->assertSame($file, $this->resolver->resolve('bill', 'https://nc1.test/', '6', 'photo1.jpg', null));
+	}
+
+	public function testRefreshesMountsOnceWhenFileNotFoundYet(): void {
+		$file = $this->createMock(File::class);
+		$this->lookup->method('findAccepted')->willReturn('/Room-both-wqhg8fxn');
+
+		$user = $this->createMock(IUser::class);
+		$this->userManager->method('get')->with('bill')->willReturn($user);
+		$this->setupManager->expects($this->once())->method('tearDown');
+		$this->setupManager->expects($this->once())->method('setupForUser')->with($user);
+
+		$calls = 0;
+		$this->userFolder->method('get')
+			->with('Room-both-wqhg8fxn/photo1.jpg')
+			->willReturnCallback(function () use (&$calls, $file) {
+				$calls++;
+				if ($calls === 1) {
+					throw new NotFoundException();
+				}
+				return $file;
+			});
+
+		$this->assertSame($file, $this->resolver->resolve('bill', 'https://nc1.test/', '6', 'photo1.jpg', null));
+	}
+
+	public function testStillMissingAfterRefreshReturnsNull(): void {
+		$this->lookup->method('findAccepted')->willReturn('/Room-both-wqhg8fxn');
+
+		$user = $this->createMock(IUser::class);
+		$this->userManager->method('get')->with('bill')->willReturn($user);
+		$this->setupManager->expects($this->once())->method('tearDown');
+		$this->setupManager->expects($this->once())->method('setupForUser')->with($user);
+
+		$this->userFolder->method('get')->willThrowException(new NotFoundException());
+
+		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'deleted.jpg', null));
 	}
 
 	public function testSingleFileShare(): void {
