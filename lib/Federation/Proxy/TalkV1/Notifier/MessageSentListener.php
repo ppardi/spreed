@@ -16,6 +16,7 @@ use OCA\Talk\Events\ASystemMessageSentEvent;
 use OCA\Talk\Events\ChatMessageSentEvent;
 use OCA\Talk\Events\SystemMessageSentEvent;
 use OCA\Talk\Events\SystemMessagesMultipleSentEvent;
+use OCA\Talk\Federation\Attachments\FileMessageSanitizer;
 use OCA\Talk\Federation\BackendNotifier;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\ProxyCacheMessage;
@@ -81,6 +82,9 @@ class MessageSentListener implements IEventListener {
 			$metaData[ProxyCacheMessage::METADATA_REPLY_TO_MESSAGE_ID] = (int)$parent->getId();
 		}
 
+		// One copy of the message is cached for all users of each remote server: file data is per user
+		[$message, $messageParameters] = FileMessageSanitizer::toPlainName($chatMessage->getMessage(), $chatMessage->getMessageParameters());
+
 		$messageData = [
 			'remoteMessageId' => (int)$event->getComment()->getId(),
 			'actorType' => $chatMessage->getActorType(),
@@ -89,8 +93,8 @@ class MessageSentListener implements IEventListener {
 			'messageType' => $chatMessage->getMessageType(),
 			'systemMessage' => $systemMessage,
 			'expirationDatetime' => $expireDate ? $expireDate->format(\DateTime::ATOM) : '',
-			'message' => $chatMessage->getMessage(),
-			'messageParameter' => json_encode($chatMessage->getMessageParameters(), JSON_THROW_ON_ERROR),
+			'message' => $message,
+			'messageParameter' => json_encode($messageParameters, JSON_THROW_ON_ERROR),
 			'creationDatetime' => $creationDate->format(\DateTime::ATOM),
 			'metaData' => json_encode($metaData, JSON_THROW_ON_ERROR),
 		];

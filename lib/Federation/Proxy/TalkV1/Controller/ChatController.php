@@ -12,6 +12,7 @@ namespace OCA\Talk\Federation\Proxy\TalkV1\Controller;
 use OCA\Talk\CachePrefix;
 use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
+use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Proxy\TalkV1\ProxyRequest;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
 use OCA\Talk\Model\Attendee;
@@ -37,6 +38,7 @@ class ChatController {
 	public function __construct(
 		private readonly ProxyRequest $proxy,
 		private readonly UserConverter $userConverter,
+		private readonly FederatedFileConverter $fileConverter,
 		private readonly ParticipantService $participantService,
 		private readonly RoomFormatter $roomFormatter,
 		private readonly Notifier $notifier,
@@ -92,6 +94,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_CREATED]);
 		if (!empty($data)) {
 			$data = $this->userConverter->convertMessage($room, $data);
+			$data = $this->fileConverter->convertMessage($room, $participant, $data);
 		} else {
 			$data = null;
 		}
@@ -205,6 +208,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy);
 		/** @var list<TalkChatMessageWithParent> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
+		$data = $this->fileConverter->convertMessages($room, $participant, $data);
 
 		return new DataResponse($data, Http::STATUS_OK, $headers);
 	}
@@ -248,6 +252,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy);
 		/** @var list<TalkChatMessageWithParent> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
+		$data = $this->fileConverter->convertMessages($room, $participant, $data);
 
 		return new DataResponse($data, Http::STATUS_OK, $headers);
 	}
@@ -347,6 +352,7 @@ class ChatController {
 		if (!empty($data)) {
 			/** @var TalkChatMessageWithParent $data */
 			$data = $this->userConverter->convertMessage($room, $data);
+			$data = $this->fileConverter->convertMessage($room, $participant, $data);
 		}
 
 		return new DataResponse($data, Http::STATUS_OK);
@@ -386,6 +392,7 @@ class ChatController {
 		if (!empty($data)) {
 			/** @var TalkChatMessageWithParent $data */
 			$data = $this->userConverter->convertMessage($room, $data);
+			$data = $this->fileConverter->convertMessage($room, $participant, $data);
 		}
 
 		return new DataResponse($data, Http::STATUS_OK);
@@ -437,6 +444,7 @@ class ChatController {
 		/** @var TalkChatMessageWithParent $data */
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_OK, Http::STATUS_ACCEPTED]);
 		$data = $this->userConverter->convertMessage($room, $data);
+		$data = $this->fileConverter->convertMessage($room, $participant, $data);
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
@@ -488,6 +496,7 @@ class ChatController {
 		/** @var TalkChatMessageWithParent $data */
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_OK, Http::STATUS_ACCEPTED]);
 		$data = $this->userConverter->convertMessage($room, $data);
+		$data = $this->fileConverter->convertMessage($room, $participant, $data);
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {

@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace OCA\Talk\Federation\Proxy\TalkV1\Controller;
 
 use OCA\Talk\Exceptions\CannotReachRemoteException;
+use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Proxy\TalkV1\ProxyRequest;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
 use OCA\Talk\Participant;
@@ -26,6 +27,7 @@ class ThreadController {
 	public function __construct(
 		private readonly ProxyRequest $proxy,
 		private readonly UserConverter $userConverter,
+		private readonly FederatedFileConverter $fileConverter,
 	) {
 	}
 
@@ -51,6 +53,7 @@ class ThreadController {
 		$data = $this->proxy->getOCSData($proxy);
 		if (!empty($data)) {
 			$data = $this->userConverter->convertThreadInfos($room, $data);
+			$data = $this->fileConverter->convertThreadInfos($room, $participant, $data);
 		}
 
 		return new DataResponse($data);
@@ -88,6 +91,7 @@ class ThreadController {
 		/** @var TalkThreadInfo $data */
 		$data = $this->proxy->getOCSData($proxy);
 		$data = $this->userConverter->convertThreadInfo($room, $data);
+		$data = $this->fileConverter->convertThreadInfo($room, $participant, $data);
 
 		return new DataResponse($data, Http::STATUS_OK);
 	}
@@ -136,6 +140,7 @@ class ThreadController {
 		/** @var TalkThreadInfo $data */
 		$data = $this->proxy->getOCSData($proxy);
 		$data = $this->userConverter->convertThreadInfo($room, $data);
+		$data = $this->fileConverter->convertThreadInfo($room, $participant, $data);
 
 		return new DataResponse($data, Http::STATUS_OK);
 	}
@@ -181,6 +186,7 @@ class ThreadController {
 		/** @var TalkThreadInfo $data */
 		$data = $this->proxy->getOCSData($proxy);
 		$data = $this->userConverter->convertThreadInfo($room, $data);
+		$data = $this->fileConverter->convertThreadInfo($room, $participant, $data);
 
 		return new DataResponse($data, Http::STATUS_OK);
 	}
