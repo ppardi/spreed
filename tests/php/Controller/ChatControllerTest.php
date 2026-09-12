@@ -16,8 +16,10 @@ use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Chat\ReactionManager;
 use OCA\Talk\Config;
 use OCA\Talk\Controller\ChatController;
+use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Federation\Attachments\RemoteShareRegistry;
+use OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController as ProxyChatController;
 use OCA\Talk\GuestManager;
 use OCA\Talk\Manager;
 use OCA\Talk\MatterbridgeManager;
@@ -46,6 +48,10 @@ use OCP\Collaboration\AutoComplete\IManager;
 use OCP\Collaboration\Collaborators\ISearchResult;
 use OCP\Comments\IComment;
 use OCP\EventDispatcher\IEventDispatcher;
+use OCP\Files\File;
+use OCP\Files\FileInfo;
+use OCP\Files\Folder;
+use OCP\Files\NotPermittedException;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\IUser;
@@ -1251,5 +1257,90 @@ class ChatControllerTest extends TestCase {
 		$response = $this->controller->postFederatedAttachment('42', $file);
 		$this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
 		$this->assertSame(['error' => $error], $response->getData());
+	}
+	/**
+	 * Bill posts "Talk/Room-abc/Bill-bill/Draft/upload-1.jpg" in a federated conversation: the file is moved into
+	 * his sender folder as "photo.jpg" before his server asks the host to post the message
+	 *
+	 * @return File&MockObject The moved file
+	 */
+	private function prepareFederatedAttachmentPost(): File&MockObject {
+		$this->talkConfig->method('isConversationSubfoldersEnabled')->willReturn(true);
+		$this->room->method('isFederatedConversation')->willReturn(true);
+		$this->room->method('getType')->willReturn(Room::TYPE_GROUP);
+		$this->room->method('getRemoteServer')->willReturn('https://nc1.test');
+		$this->featureSupport->method('remoteSupportsUploads')->with('https://nc1.test')->willReturn(true);
+
+		$subfolder = $this->createMock(Folder::class);
+		$draftFolder = $this->createMock(Folder::class);
+		$draftFolder->method('getId')->willReturn(7);
+		$draftFolder->method('getPath')->willReturn('/testUser/files/Talk/Room-abc/Bill-bill/Draft');
+		$this->conversationFolderService->method('getOrCreateSubfolder')->with($this->userId, $this->room, false)->willReturn($subfolder);
+		$this->conversationFolderService->method('getOrCreateDraftFolder')->with($subfolder)->willReturn($draftFolder);
+
+		$uploaded = $this->createMock(File::class);
+		$uploaded->method('getType')->willReturn(FileInfo::TYPE_FILE);
+		$uploaded->method('getParent')->willReturn($draftFolder);
+		$uploaded->method('getName')->willReturn('upload-1.jpg');
+		$this->conversationFolderService->method('getFileNode')
+			->with($this->userId, 'Talk/Room-abc/Bill-bill/Draft/upload-1.jpg')
+			->willReturn($uploaded);
+
+		$moved = $this->createMock(File::class);
+		$moved->method('getName')->willReturn('photo.jpg');
+		$this->conversationFolderService->method('finalizeUploadedFile')
+			->with($subfolder, $uploaded, 'photo.jpg')
+			->willReturn(['from' => 'photo.jpg', 'to' => 'photo.jpg', 'node' => $moved]);
+
+		$this->controller->setRoom($this->room);
+		$this->controller->setParticipant($this->createMock(Participant::class));
+		return $moved;
+	}
+
+	private function mockProxyChatController(): ProxyChatController&MockObject {
+		$proxy = $this->createMock(ProxyChatController::class);
+		$this->overwriteService(ProxyChatController::class, $proxy);
+		return $proxy;
+	}
+
+	public function testPostedFederatedAttachmentStaysInTheSenderFolder(): void {
+		$moved = $this->prepareFederatedAttachmentPost();
+		$this->mockProxyChatController()->expects($this->once())->method('postAttachment')->willReturn(null);
+		$moved->expects($this->never())->method('move');
+
+		$response = $this->controller->postAttachmentToRoom('Talk/Room-abc/Bill-bill/Draft/upload-1.jpg', 'ref', '', 'photo.jpg');
+		$this->assertSame(Http::STATUS_OK, $response->getStatus());
+		$this->assertSame(['renames' => [['photo.jpg' => 'photo.jpg']]], $response->getData());
+	}
+
+	public function testFederatedAttachmentGoesBackToDraftWhenTheHostRejectsIt(): void {
+		$moved = $this->prepareFederatedAttachmentPost();
+		$error = new DataResponse(['error' => 'permission'], Http::STATUS_FORBIDDEN);
+		$this->mockProxyChatController()->method('postAttachment')->willReturn($error);
+		// Under its original name, so that the client can post it again
+		$moved->expects($this->once())->method('move')->with('/testUser/files/Talk/Room-abc/Bill-bill/Draft/upload-1.jpg');
+
+		$response = $this->controller->postAttachmentToRoom('Talk/Room-abc/Bill-bill/Draft/upload-1.jpg', 'ref', '', 'photo.jpg');
+		$this->assertSame($error, $response);
+	}
+
+	public function testFederatedAttachmentGoesBackToDraftWhenTheHostIsUnreachable(): void {
+		$moved = $this->prepareFederatedAttachmentPost();
+		$this->mockProxyChatController()->method('postAttachment')->willThrowException(new CannotReachRemoteException());
+		$moved->expects($this->once())->method('move')->with('/testUser/files/Talk/Room-abc/Bill-bill/Draft/upload-1.jpg');
+
+		$this->expectException(CannotReachRemoteException::class);
+		$this->controller->postAttachmentToRoom('Talk/Room-abc/Bill-bill/Draft/upload-1.jpg', 'ref', '', 'photo.jpg');
+	}
+
+	public function testFailedMoveBackToDraftKeepsTheError(): void {
+		$moved = $this->prepareFederatedAttachmentPost();
+		$error = new DataResponse(['error' => 'remote'], Http::STATUS_UNPROCESSABLE_ENTITY);
+		$this->mockProxyChatController()->method('postAttachment')->willReturn($error);
+		$moved->method('move')->willThrowException(new NotPermittedException('locked'));
+		$this->logger->expects($this->once())->method('warning');
+
+		$response = $this->controller->postAttachmentToRoom('Talk/Room-abc/Bill-bill/Draft/upload-1.jpg', 'ref', '', 'photo.jpg');
+		$this->assertSame($error, $response);
 	}
 }

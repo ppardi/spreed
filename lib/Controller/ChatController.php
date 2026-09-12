@@ -76,6 +76,8 @@ use OCP\Comments\MessageTooLongException;
 use OCP\Comments\NotFoundException;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\FileInfo;
+use OCP\Files\Folder;
+use OCP\Files\Node;
 use OCP\Files\NotEnoughSpaceException;
 use OCP\Files\NotFoundException as FileNotFoundException;
 use OCP\IL10N;
@@ -2578,8 +2580,14 @@ class ChatController extends AEnvironmentAwareOCSController {
 			// The conversation is hosted elsewhere: share the folder with the participants there, then the host posts the message
 			/** @var \OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController $proxy */
 			$proxy = \OCP\Server::get(\OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController::class);
-			$error = $proxy->postAttachment($this->room, $this->participant, $subfolder, $node, $talkMetaData, $referenceId);
+			try {
+				$error = $proxy->postAttachment($this->room, $this->participant, $subfolder, $node, $talkMetaData, $referenceId);
+			} catch (\Throwable $e) {
+				$this->moveBackToDraft($node, $draftFolder, $filePath);
+				throw $e;
+			}
 			if ($error !== null) {
+				$this->moveBackToDraft($node, $draftFolder, $filePath);
 				return $error;
 			}
 			return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
@@ -2591,6 +2599,18 @@ class ChatController extends AEnvironmentAwareOCSController {
 		$this->postFileMessage(['fileId' => (string)$node->getId()], $node->getMimeType(), $talkMetaData, $referenceId, Attendee::ACTOR_USERS, $uid);
 
 		return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
+	}
+
+	/**
+	 * The host did not post the message: the file must not stay in the sender folder (shared with the other
+	 * participants) without one, and the client posts it again from the Draft folder under its original name
+	 */
+	private function moveBackToDraft(Node $node, Folder $draftFolder, string $filePath): void {
+		try {
+			$node->move($draftFolder->getPath() . '/' . basename($filePath));
+		} catch (\Throwable $e) {
+			$this->logger->warning('Could not move ' . $node->getName() . ' back to the Draft folder after the host did not post it', ['exception' => $e]);
+		}
 	}
 
 	/**
