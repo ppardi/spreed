@@ -13,6 +13,7 @@ use OCA\Talk\Authenticator;
 use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Chat\Parser\SystemMessage;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Federation\Attachments\RemoteFileRenderer;
 use OCA\Talk\Model\AttachmentShare;
 use OCA\Talk\Model\AttachmentShareMapper;
 use OCA\Talk\Model\Attendee;
@@ -63,6 +64,7 @@ class SystemMessageTest extends TestCase {
 	protected Authenticator&MockObject $federationAuthenticator;
 	protected IEventDispatcher&MockObject $dispatcher;
 	protected AttachmentShareMapper&MockObject $attachmentShareMapper;
+	protected RemoteFileRenderer&MockObject $remoteFileRenderer;
 	protected IL10N&MockObject $l;
 
 	public function setUp(): void {
@@ -82,6 +84,7 @@ class SystemMessageTest extends TestCase {
 		$this->federationAuthenticator = $this->createMock(Authenticator::class);
 		$this->dispatcher = $this->createMock(IEventDispatcher::class);
 		$this->attachmentShareMapper = $this->createMock(AttachmentShareMapper::class);
+		$this->remoteFileRenderer = $this->createMock(RemoteFileRenderer::class);
 		$this->l = $this->createMock(IL10N::class);
 		$this->l->method('t')
 			->willReturnCallback(fn ($text, $parameters = []) => vsprintf($text, $parameters));
@@ -115,6 +118,7 @@ class SystemMessageTest extends TestCase {
 					$this->dispatcher,
 					new RoomShareLocator($this->shareProvider),
 					$this->attachmentShareMapper,
+					$this->remoteFileRenderer,
 				])
 				->onlyMethods($methods)
 				->getMock();
@@ -137,6 +141,7 @@ class SystemMessageTest extends TestCase {
 			$this->dispatcher,
 			new RoomShareLocator($this->shareProvider),
 			$this->attachmentShareMapper,
+			$this->remoteFileRenderer,
 		);
 	}
 
@@ -1548,6 +1553,48 @@ class SystemMessageTest extends TestCase {
 		$this->assertSame('smoke.png', $result['name']);
 		$this->assertArrayNotHasKey('id', $result);
 		$this->assertArrayNotHasKey('link', $result);
+	}
+
+	private function parseFederatedFileMessage(array $parameters): Message {
+		$room = $this->createMock(Room::class);
+		$participant = $this->createMock(Participant::class);
+		$participant->method('isGuest')->willReturn(false);
+		$participant->method('getAttendee')->willReturn(Attendee::fromRow(['actor_type' => Attendee::ACTOR_USERS, 'actor_id' => 'paul']));
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getActorType')->willReturn(Attendee::ACTOR_FEDERATED_USERS);
+		$comment->method('getActorId')->willReturn('bill@nc2.test');
+
+		$parser = $this->getParser(['getActorFromComment']);
+		$parser->method('getActorFromComment')->willReturn(['type' => 'user', 'id' => 'bill', 'name' => 'Bill', 'server' => 'https://nc2.test']);
+
+		$chatMessage = new Message($room, $participant, $comment, $this->l);
+		$chatMessage->setMessage(json_encode(['message' => 'file_shared', 'parameters' => $parameters]), [], 'file_shared');
+		self::invokePrivate($parser, 'parseMessage', [$chatMessage, false]);
+		return $chatMessage;
+	}
+
+	public function testFederatedFileIsRenderedPerViewer(): void {
+		$federatedFile = ['owner' => 'bill@nc2.test', 'folderId' => '42', 'path' => 'photo.png', 'name' => 'photo.png', 'size' => 7855, 'mimetype' => 'image/png', 'etag' => 'e1', 'fileId' => '88'];
+		$this->remoteFileRenderer->expects($this->once())
+			->method('render')
+			->with($this->isInstanceOf(Room::class), $this->isInstanceOf(Participant::class), $federatedFile)
+			->willReturn(['type' => 'file', 'id' => '77']);
+
+		$chatMessage = $this->parseFederatedFileMessage(['federatedFile' => $federatedFile, 'metaData' => ['caption' => 'Look']]);
+
+		$this->assertSame('Look', $chatMessage->getMessage());
+		$this->assertSame(['type' => 'file', 'id' => '77'], $chatMessage->getMessageParameters()['file']);
+		$this->assertSame(ChatManager::VERB_MESSAGE, $chatMessage->getMessageType());
+	}
+
+	public function testUnavailableFederatedFileShowsTheFallback(): void {
+		$this->remoteFileRenderer->method('render')->willThrowException(new NotFoundException());
+
+		$chatMessage = $this->parseFederatedFileMessage(['federatedFile' => ['owner' => 'bill@nc2.test'], 'metaData' => []]);
+
+		// Usually the received share still waits for acceptance, so not "no longer available"
+		$this->assertSame('*{actor} shared a file which is not available yet*', $chatMessage->getMessage());
+		$this->assertArrayNotHasKey('file', $chatMessage->getMessageParameters());
 	}
 
 	public static function dataGetUnavailableFileMessage(): array {

@@ -16,6 +16,7 @@ use OCA\Talk\Events\MessageParseEvent;
 use OCA\Talk\Events\OverwritePublicSharePropertiesEvent;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Federation\Attachments\FederatedFileReference;
+use OCA\Talk\Federation\Attachments\RemoteFileRenderer;
 use OCA\Talk\Model\AttachmentShare;
 use OCA\Talk\Model\AttachmentShareMapper;
 use OCA\Talk\Model\Attendee;
@@ -88,6 +89,7 @@ class SystemMessage implements IEventListener {
 		private readonly IEventDispatcher $dispatcher,
 		private readonly RoomShareLocator $roomShareLocator,
 		private readonly AttachmentShareMapper $attachmentShareMapper,
+		private readonly RemoteFileRenderer $remoteFileRenderer,
 	) {
 	}
 
@@ -535,8 +537,11 @@ class SystemMessage implements IEventListener {
 					$parsedParameters['file'] = $this->getFileFromShare($room, $participant, $parameters['share'], $allowInaccurate);
 				} elseif (isset($parameters['fileId'])) {
 					$parsedParameters['file'] = $this->getFileFromNodeId($room, $participant, (int)$parameters['fileId'], $allowInaccurate);
+				} elseif (isset($parameters['federatedFile'])) {
+					// Shared by a federated participant from their own server (federated attachments)
+					$parsedParameters['file'] = $this->remoteFileRenderer->render($room, $participant, $parameters['federatedFile']);
 				} else {
-					throw new \InvalidArgumentException('No share or fileId in file_shared message');
+					throw new \InvalidArgumentException('No share, fileId or federatedFile in file_shared message');
 				}
 				$parsedMessage = '{file}';
 				$metaData = $parameters['metaData'] ?? [];
@@ -559,7 +564,10 @@ class SystemMessage implements IEventListener {
 				}
 			} catch (\Exception) {
 				$chatMessage->setMessageType(ChatManager::VERB_MESSAGE);
-				$parsedMessage = $this->getUnavailableFileMessage($currentUserIsActor, $currentActorType);
+				$parsedMessage = isset($parameters['federatedFile']) && !$currentUserIsActor && $currentActorType === Attendee::ACTOR_USERS
+					// Shared from the sender's server: usually the received share still waits for acceptance
+					? $this->l->t('{actor} shared a file which is not available yet')
+					: $this->getUnavailableFileMessage($currentUserIsActor, $currentActorType);
 				$parsedMessage = '*' . $parsedMessage . '*';
 
 				$metaData = $parameters['metaData'] ?? [];
