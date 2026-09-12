@@ -27,21 +27,59 @@ final class FederatedFileReference {
 	 * @return array<string, string>
 	 */
 	public static function forShare(array $fileData, string $server, string $shareId, string $path): array {
-		$reference = ['type' => self::TYPE];
-		foreach (self::DISPLAY_KEYS as $key) {
-			if (isset($fileData[$key])) {
-				$reference[$key] = (string)$fileData[$key];
-			}
-		}
+		$reference = self::withDisplayData($fileData);
 		$reference['server'] = $server;
 		$reference['share-id'] = $shareId;
 		$reference['path'] = $path;
 		return $reference;
 	}
 
+	/**
+	 * For a viewer on the server that owns the file: the sender viewing their own file (design §5.1)
+	 *
+	 * @param array<string, string> $fileData Display data of the file
+	 * @param string $server Server that owns the file (the viewer's own server)
+	 * @param string $fileId Id of the file on $server
+	 * @return array<string, string>
+	 */
+	public static function forOwnFile(array $fileData, string $server, string $fileId): array {
+		$reference = self::withDisplayData($fileData);
+		$reference['server'] = $server;
+		$reference['file-id'] = $fileId;
+		return $reference;
+	}
+
+	/**
+	 * Without a viewer (one render for all federated recipients): display data only, which no server resolves,
+	 * so per-room cached copies keep just the file name (design §5.2, ruling R6)
+	 *
+	 * @param array<string, string> $fileData Display data of the file
+	 * @return array<string, string>
+	 */
+	public static function forDisplay(array $fileData, string $server): array {
+		$reference = self::withDisplayData($fileData);
+		$reference['server'] = $server;
+		return $reference;
+	}
+
 	public static function isReference(mixed $parameter): bool {
 		return is_array($parameter)
 			&& ($parameter['type'] ?? null) === self::TYPE
-			&& isset($parameter['name'], $parameter['server'], $parameter['share-id'], $parameter['path']);
+			&& isset($parameter['name'], $parameter['server'])
+			&& (isset($parameter['share-id'], $parameter['path']) || isset($parameter['file-id']));
+	}
+
+	/**
+	 * @param array<string, string> $fileData
+	 * @return array<string, string>
+	 */
+	private static function withDisplayData(array $fileData): array {
+		$reference = ['type' => self::TYPE];
+		foreach (self::DISPLAY_KEYS as $key) {
+			if (isset($fileData[$key])) {
+				$reference[$key] = (string)$fileData[$key];
+			}
+		}
+		return $reference;
 	}
 }

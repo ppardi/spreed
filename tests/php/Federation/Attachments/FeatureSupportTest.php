@@ -113,4 +113,40 @@ class FeatureSupportTest extends TestCase {
 		$this->assertTrue($this->featureSupport->remoteSupports('nc2.test', true));
 		$this->assertSame([], $this->cached, 'A definite answer clears the marker');
 	}
+
+	public function testRemoteSupportsUploads(): void {
+		$provider = $this->createMock(IOCMProvider::class);
+		$provider->expects($this->once())
+			->method('extractProtocolEntry')
+			->with('talk-room', 'talk-attachments-v2')
+			->willReturn('/ocs/v2.php/apps/spreed/api/');
+		$this->discoveryService->method('discover')->with('nc1.test', false)->willReturn($provider);
+
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
+	}
+
+	public function testServerWithOnlyTheFirstProtocolDoesNotSupportUploads(): void {
+		// Build 24.0.5.1: shows files, but has no endpoint for files of federated participants (ruling R10)
+		$provider = $this->createMock(IOCMProvider::class);
+		$provider->method('extractProtocolEntry')
+			->willReturnCallback(function (string $resource, string $protocol): string {
+				if ($protocol !== 'talk-attachments-v1') {
+					throw new OCMArgumentException($protocol);
+				}
+				return '/ocs/v2.php/apps/spreed/api/';
+			});
+		$this->discoveryService->method('discover')->willReturn($provider);
+
+		$this->assertTrue($this->featureSupport->remoteSupports('nc1.test'));
+		$this->assertFalse($this->featureSupport->remoteSupportsUploads('nc1.test'));
+	}
+
+	public function testUnreachableServerIsUnknownForUploadsToo(): void {
+		$this->discoveryService->expects($this->once())
+			->method('discover')
+			->willThrowException(new OCMProviderException('unreachable'));
+
+		$this->assertNull($this->featureSupport->remoteSupportsUploads('nc1.test'));
+		$this->assertNull($this->featureSupport->remoteSupports('nc1.test'), 'The unknown marker is per server');
+	}
 }

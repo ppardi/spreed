@@ -48,8 +48,30 @@ class FederatedFileReferenceTest extends TestCase {
 	public function testIsReference(): void {
 		$reference = FederatedFileReference::forShare(['name' => 'a.png'], 'https://nc1.test', '6', '');
 		$this->assertTrue(FederatedFileReference::isReference($reference));
+		$this->assertTrue(FederatedFileReference::isReference(FederatedFileReference::forOwnFile(['name' => 'a.png'], 'https://nc2.test', '88')));
 		$this->assertFalse(FederatedFileReference::isReference(['type' => 'file', 'name' => 'a.png']));
 		$this->assertFalse(FederatedFileReference::isReference(['type' => 'federated-file', 'name' => 'a.png']));
 		$this->assertFalse(FederatedFileReference::isReference(null));
+	}
+
+	public function testForOwnFile(): void {
+		$this->assertSame([
+			'type' => 'federated-file',
+			'name' => 'photo.png',
+			'mimetype' => 'image/png',
+			'server' => 'https://nc2.test',
+			'file-id' => '88',
+		], FederatedFileReference::forOwnFile(['id' => '1', 'name' => 'photo.png', 'mimetype' => 'image/png'], 'https://nc2.test', '88'));
+	}
+
+	public function testForDisplayCanNotBeResolved(): void {
+		$reference = FederatedFileReference::forDisplay(['id' => '1', 'name' => 'photo.png', 'size' => '7855'], 'https://nc2.test');
+		$this->assertSame([
+			'type' => 'federated-file',
+			'name' => 'photo.png',
+			'size' => '7855',
+			'server' => 'https://nc2.test',
+		], $reference);
+		$this->assertFalse(FederatedFileReference::isReference($reference));
 	}
 }

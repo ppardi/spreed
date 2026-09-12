@@ -41,8 +41,10 @@ use OCP\DB\Types;
 class AttachmentShare extends Entity {
 	/** Source is a TYPE_ROOM share on the host (Talk 24 conversation folder or a single file) */
 	public const SOURCE_ROOM_SHARE = 'room_share';
-	/** Source is a sender folder on a remote participant's server (Plan 2) */
+	/** Host: source is a federated participant's sender folder on their own server (source id: RemoteFile::sourceId()) */
 	public const SOURCE_REMOTE_FOLDER = 'remote_folder';
+	/** A federated participant's server: source is the participant's sender folder here, room is the local proxy conversation */
+	public const SOURCE_SENDER_FOLDER = 'sender_folder';
 
 	/** Talk created the federated share, so Talk removes it again when nothing uses it anymore */
 	public const ORIGIN_CREATED = 'created';

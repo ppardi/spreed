@@ -26,6 +26,13 @@ class FeatureSupport {
 	public const REQUEST_HEADER = 'X-Nextcloud-Talk-Federated-Attachments';
 	/** Protocol entry on the talk-room OCM resource type, checked before sharing files with a server */
 	public const OCM_PROTOCOL = 'talk-attachments-v1';
+	/** Talk feature: clients offer uploads in a federated conversation only when both servers list it (direction B) */
+	public const UPLOAD_FEATURE = 'federated-attachments-upload';
+	/**
+	 * Protocol entry on the talk-room OCM resource type: the server accepts files that federated participants post
+	 * from their own server, and resolves files from any participant's server (ruling R10)
+	 */
+	public const OCM_PROTOCOL_V2 = 'talk-attachments-v2';
 
 	/** Seconds during which a server whose support is unknown is not asked again (unless skipping the cache) */
 	private const UNKNOWN_TTL = 300;
@@ -48,6 +55,20 @@ class FeatureSupport {
 	 *                   null when unknown (the server could not be reached, try again later)
 	 */
 	public function remoteSupports(string $remote, bool $skipCache = false): ?bool {
+		return $this->remoteHasProtocol($remote, self::OCM_PROTOCOL, $skipCache);
+	}
+
+	/**
+	 * Whether the server also handles files of federated participants (direction B): as host it accepts them,
+	 * as viewer it resolves them. Servers with only `talk-attachments-v1` show files of the host only.
+	 *
+	 * @return bool|null Same as remoteSupports()
+	 */
+	public function remoteSupportsUploads(string $remote, bool $skipCache = false): ?bool {
+		return $this->remoteHasProtocol($remote, self::OCM_PROTOCOL_V2, $skipCache);
+	}
+
+	private function remoteHasProtocol(string $remote, string $protocol, bool $skipCache): ?bool {
 		$key = ServerUrl::normalize($remote);
 		if (!$skipCache && $this->unknownRemotes->get($key) !== null) {
 			// Don't make users' requests wait for the discovery timeouts again and again
@@ -56,7 +77,7 @@ class FeatureSupport {
 
 		try {
 			$provider = $this->discoveryService->discover($remote, $skipCache);
-			$provider->extractProtocolEntry(FederationManager::TALK_ROOM_RESOURCE, self::OCM_PROTOCOL);
+			$provider->extractProtocolEntry(FederationManager::TALK_ROOM_RESOURCE, $protocol);
 			$supported = true;
 		} catch (OCMArgumentException) {
 			$supported = false;
