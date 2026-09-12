@@ -44,6 +44,10 @@ class LocalFileResolver {
 	 *                                  Only pass it in the user's own request (moving a mount needs their session).
 	 */
 	public function resolve(string $userId, string $server, string $shareId, string $path, ?string $targetFolder): ?Node {
+		if (in_array('..', explode('/', $path), true)) {
+			// Paths come from other servers: never leave the shared node
+			return null;
+		}
 		try {
 			$mountPoint = $this->lookup->findAccepted($userId, $server, $shareId);
 			if ($mountPoint === null) {

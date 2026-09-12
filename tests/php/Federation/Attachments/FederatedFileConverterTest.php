@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace OCA\Talk\Tests\php\Federation\Attachments;
 
 use OCA\Talk\Config;
+use OCA\Talk\Federation\Attachments\ConversationFolder;
 use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Attachments\FileParameterBuilder;
 use OCA\Talk\Federation\Attachments\LocalFileResolver;
@@ -17,7 +18,10 @@ use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCP\Files\File;
+use OCP\Files\Folder;
+use OCP\Files\IRootFolder;
 use OCP\IL10N;
+use OCP\IURLGenerator;
 use OCP\IUser;
 use OCP\IUserSession;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -38,6 +42,8 @@ class FederatedFileConverterTest extends TestCase {
 	protected FileParameterBuilder&MockObject $builder;
 	protected Config&MockObject $config;
 	protected IUserSession&MockObject $userSession;
+	protected IRootFolder&MockObject $rootFolder;
+	protected IURLGenerator&MockObject $url;
 	protected Room&MockObject $room;
 	protected Participant&MockObject $participant;
 	protected FederatedFileConverter $converter;
@@ -62,12 +68,17 @@ class FederatedFileConverterTest extends TestCase {
 			'actor_id' => 'bill',
 		]));
 
+		$this->rootFolder = $this->createMock(IRootFolder::class);
+		$this->url = $this->createMock(IURLGenerator::class);
+		$this->url->method('getAbsoluteURL')->with('/')->willReturn('https://nc2.test/');
+
 		$this->converter = new FederatedFileConverter(
 			$this->resolver,
 			$this->builder,
-			$this->config,
+			new ConversationFolder($this->config, $this->userSession),
+			$this->rootFolder,
+			$this->url,
 			$l,
-			$this->userSession,
 			$this->createMock(LoggerInterface::class),
 		);
 	}
@@ -117,15 +128,50 @@ class FederatedFileConverterTest extends TestCase {
 		]);
 	}
 
-	public function testReferenceToAnotherServerIsNotResolved(): void {
+	public function testReferenceFromAThirdServerIsResolved(): void {
+		// Bill viewing a file that Carol sent from her own server (design §6.7, ruling R5)
 		$this->loginAs('bill');
-		$this->resolver->expects($this->never())->method('resolve');
+		$node = $this->createMock(File::class);
+		$this->resolver->expects($this->once())
+			->method('resolve')
+			->with('bill', 'https://nc3.test/', '6', 'photo1.jpg', 'Talk/Room-both-64z86muv')
+			->willReturn($node);
+		$this->builder->method('forLocalNode')->willReturn(['type' => 'file', 'id' => '190']);
 
 		$converted = $this->converter->convertMessage($this->room, $this->participant, [
 			'message' => '{file}',
 			'messageParameters' => ['file' => array_merge(self::REFERENCE, ['server' => 'https://nc3.test/'])],
 		]);
-		$this->assertSame('*"photo1.jpg" is not available*', $converted['message']);
+		$this->assertSame(['type' => 'file', 'id' => '190'], $converted['messageParameters']['file']);
+	}
+
+	public function testOwnFileIsFoundInTheViewersStorage(): void {
+		// Bill viewing the file he sent from this server (design §6.6)
+		$this->loginAs('bill');
+		$reference = ['type' => 'federated-file', 'name' => 'mine.png', 'server' => 'https://nc2.test', 'file-id' => '88'];
+		$node = $this->createMock(File::class);
+		$userFolder = $this->createMock(Folder::class);
+		$userFolder->expects($this->once())->method('getFirstNodeById')->with(88)->willReturn($node);
+		$this->rootFolder->method('getUserFolder')->with('bill')->willReturn($userFolder);
+		$this->resolver->expects($this->never())->method('resolve');
+		$this->builder->method('forLocalNode')->with($node, $reference)->willReturn(['type' => 'file', 'id' => '88']);
+
+		$converted = $this->converter->convertMessage($this->room, $this->participant, [
+			'message' => '{file}',
+			'messageParameters' => ['file' => $reference],
+		]);
+		$this->assertSame(['type' => 'file', 'id' => '88'], $converted['messageParameters']['file']);
+	}
+
+	public function testFileIdOfAnotherServerIsNotResolved(): void {
+		$this->loginAs('bill');
+		$this->rootFolder->expects($this->never())->method('getUserFolder');
+
+		$converted = $this->converter->convertMessage($this->room, $this->participant, [
+			'message' => '{file}',
+			'messageParameters' => ['file' => ['type' => 'federated-file', 'name' => 'mine.png', 'server' => 'https://nc3.test', 'file-id' => '88']],
+		]);
+		$this->assertSame('*"mine.png" is not available*', $converted['message']);
 	}
 
 	public function testUnresolvedReferenceFallsBackToText(): void {

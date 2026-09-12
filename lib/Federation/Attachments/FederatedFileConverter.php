@@ -9,13 +9,13 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Federation\Attachments;
 
-use OCA\Talk\Config;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\IL10N;
-use OCP\IUserSession;
+use OCP\IURLGenerator;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -29,9 +29,10 @@ class FederatedFileConverter {
 	public function __construct(
 		private readonly LocalFileResolver $resolver,
 		private readonly FileParameterBuilder $builder,
-		private readonly Config $talkConfig,
+		private readonly ConversationFolder $conversationFolder,
+		private readonly IRootFolder $rootFolder,
+		private readonly IURLGenerator $url,
 		private readonly IL10N $l,
-		private readonly IUserSession $userSession,
 		private readonly LoggerInterface $logger,
 	) {
 	}
@@ -103,30 +104,30 @@ class FederatedFileConverter {
 		if ($attendee->getActorType() !== Attendee::ACTOR_USERS) {
 			return null;
 		}
-		// Plan 1: files are always owned by the conversation's host
-		if (!ServerUrl::equals($reference['server'], $room->getRemoteServer())) {
-			return null;
-		}
 
 		$userId = $attendee->getActorId();
+		$ownFile = isset($reference['file-id']);
 		// Includes the user: the service is shared by everything in the process (cron, occ, OCM requests)
-		$key = $userId . '#' . $reference['server'] . '#' . $reference['share-id'] . '#' . $reference['path'];
+		$key = $userId . '#' . $reference['server'] . '#'
+			. ($ownFile ? 'file:' . $reference['file-id'] : 'share:' . $reference['share-id'] . '#' . $reference['path']);
 		if (!array_key_exists($key, $this->resolved)) {
-			// Moving the received share needs the user's own session (not the case in OCM notifications)
-			$targetFolder = $this->userSession->getUser()?->getUID() === $userId ? $this->getTargetFolder($room, $userId) : null;
-			$this->resolved[$key] = $this->resolver->resolve($userId, $reference['server'], $reference['share-id'], $reference['path'], $targetFolder);
+			$this->resolved[$key] = $ownFile
+				? $this->resolveOwnFile($userId, $reference['server'], $reference['file-id'])
+				// A share the user received: of the host's files, or of files a participant sent from their own
+				// server (design §6). The lookup only finds shares this user accepted from that server (ruling R5).
+				: $this->resolver->resolve($userId, $reference['server'], $reference['share-id'], $reference['path'], $this->conversationFolder->targetForViewer($room, $userId));
 		}
 		return $this->resolved[$key];
 	}
 
 	/**
-	 * The viewer's conversation folder, e.g. "Talk/Room-both-64z86muv" (design D3)
+	 * The viewer sent the file from this server (design §5.1): only their own storage is searched
 	 */
-	private function getTargetFolder(Room $room, string $userId): ?string {
-		if (!$this->talkConfig->isConversationSubfoldersEnabled()) {
+	private function resolveOwnFile(string $userId, string $server, string $fileId): ?Node {
+		if (!ServerUrl::equals($server, $this->url->getAbsoluteURL('/')) || !ctype_digit($fileId)) {
 			return null;
 		}
-		return trim($this->talkConfig->getAttachmentFolder($userId), '/') . '/' . $this->talkConfig->getConversationFolderName($room, $userId);
+		return $this->rootFolder->getUserFolder($userId)->getFirstNodeById((int)$fileId);
 	}
 
 	private function withFallback(array $message, string $fileName): array {

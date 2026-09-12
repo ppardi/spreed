@@ -204,6 +204,11 @@ class LocalFileResolverTest extends TestCase {
 		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', 'deleted2.jpg', null));
 	}
 
+	public function testPathLeavingTheShareIsRejected(): void {
+		$this->lookup->expects($this->never())->method('findAccepted');
+		$this->assertNull($this->resolver->resolve('bill', 'https://nc1.test/', '6', '../Documents/secret.txt', null));
+	}
+
 	public function testUnexpectedFailuresAreLogged(): void {
 		$this->lookup->method('findAccepted')->willThrowException(new \RuntimeException('Remote storage unavailable'));
 		$this->logger->expects($this->once())->method('info');
