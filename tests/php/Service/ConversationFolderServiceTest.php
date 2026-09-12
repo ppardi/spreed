@@ -564,4 +564,29 @@ class ConversationFolderServiceTest extends TestCase {
 		$this->expectException(\RuntimeException::class);
 		$this->service->getOrCreateDraftFolder($subfolder);
 	}
+
+	public function testGetOrCreateSubfolderDoesNotShareInFederatedConversations(): void {
+		$room = $this->makeRoom('tok9');
+		$room->method('isFederatedConversation')->willReturn(true);
+
+		$userFolder = $this->makeUserFolderMock();
+		$attachmentNode = $this->createMock(Folder::class);
+		$convFolder = $this->createMock(Folder::class);
+		$subfolder = $this->createMock(Folder::class);
+
+		$this->talkConfig->method('getAttachmentFolder')->willReturn('/Talk');
+		$this->talkConfig->method('getConversationFolderName')->willReturn('Room-tok9');
+		$this->talkConfig->method('getConversationSubfolderName')->willReturn('Bill-bill');
+
+		$this->rootFolder->method('getUserFolder')->willReturn($userFolder);
+		$userFolder->method('get')->willReturn($attachmentNode);
+		$attachmentNode->method('get')->willReturn($convFolder);
+		$convFolder->method('get')->willReturn($subfolder);
+
+		// The conversation lives on another server: its participants get federated shares when a file is posted
+		$this->shareManager->expects($this->never())->method('newShare');
+		$this->shareManager->expects($this->never())->method('createShare');
+
+		$this->assertSame($subfolder, $this->service->getOrCreateSubfolder('bill', $room, false));
+	}
 }

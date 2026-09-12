@@ -25,6 +25,7 @@ use OCP\Federation\ICloudId;
 use OCP\Federation\ICloudIdManager;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
+use OCP\IURLGenerator;
 use OCP\Share\Exceptions\ShareNotFound;
 use OCP\Share\IManager as IShareManager;
 use OCP\Share\IShare;
@@ -40,6 +41,7 @@ class AttachmentSharerTest extends TestCase {
 	protected FeatureSupport&MockObject $featureSupport;
 	protected ICloudIdManager&MockObject $cloudIdManager;
 	protected IRootFolder&MockObject $rootFolder;
+	protected IURLGenerator&MockObject $url;
 	protected Room&MockObject $room;
 	protected IShare&MockObject $roomShare;
 	protected Folder&MockObject $sharedFolder;
@@ -76,6 +78,9 @@ class AttachmentSharerTest extends TestCase {
 		$userFolder->method('getFirstNodeById')->with(193)->willReturn($this->sharedFolder);
 		$this->rootFolder->method('getUserFolder')->with('paul')->willReturn($userFolder);
 
+		$this->url = $this->createMock(IURLGenerator::class);
+		$this->url->method('getAbsoluteURL')->with('/')->willReturn('https://nc2.test/');
+
 		$this->sharer = new AttachmentSharer(
 			$this->shareManager,
 			$this->roomShareProvider,
@@ -85,6 +90,7 @@ class AttachmentSharerTest extends TestCase {
 			$this->cloudIdManager,
 			$this->rootFolder,
 			$timeFactory,
+			$this->url,
 			$this->createMock(LoggerInterface::class),
 		);
 	}
@@ -434,5 +440,135 @@ class AttachmentSharerTest extends TestCase {
 		$this->shareManager->expects($this->once())->method('deleteShare')->with($remoteShare);
 
 		$this->sharer->unshareRoomShare($this->room, '5');
+	}
+
+	private function senderFolder(): Folder&MockObject {
+		$folder = $this->createMock(Folder::class);
+		$folder->method('getId')->willReturn(42);
+		return $folder;
+	}
+
+	/**
+	 * New federated shares of Bill's sender folder get the ids 21, 22, … in creation order
+	 *
+	 * @return \ArrayObject<int, string> Cloud ids the shares are created for, filled while the test runs
+	 */
+	private function expectSenderFolderShares(Folder $folder, int $count): \ArrayObject {
+		$sharedWith = new \ArrayObject();
+		$this->shareManager->method('getSharesBy')->with('bill', IShare::TYPE_REMOTE, $folder, false, -1)->willReturn([]);
+		$this->shareManager->method('newShare')->willReturnCallback(function () use ($folder, $sharedWith): IShare {
+			$share = $this->createMock(IShare::class);
+			$share->method('setNode')->with($folder)->willReturnSelf();
+			$share->method('setShareType')->with(IShare::TYPE_REMOTE)->willReturnSelf();
+			$share->method('setSharedBy')->with('bill')->willReturnSelf();
+			$share->method('setSharedWith')->willReturnCallback(function (string $cloudId) use ($share, $sharedWith): IShare {
+				$sharedWith[] = $cloudId;
+				return $share;
+			});
+			$share->method('setPermissions')->with(Constants::PERMISSION_READ)->willReturnSelf();
+			return $share;
+		});
+		$this->shareManager->expects($this->exactly($count))->method('createShare')->willReturnCallback(function () use ($sharedWith): IShare {
+			$created = $this->createMock(IShare::class);
+			$created->method('getId')->willReturn((string)(20 + count($sharedWith)));
+			return $created;
+		});
+		return $sharedWith;
+	}
+
+	public function testSenderFolderIsSharedWithParticipantsOnOtherServers(): void {
+		$folder = $this->senderFolder();
+		$this->featureSupport->method('remoteSupportsUploads')->willReturn(true);
+		$this->mapper->method('findForRecipient')->willReturn(null);
+		$this->mapper->method('findBySource')->willReturn([]);
+		$sharedWith = $this->expectSenderFolderShares($folder, 2);
+		$inserted = [];
+		$this->mapper->method('insert')->willReturnCallback(function (AttachmentShare $row) use (&$inserted): AttachmentShare {
+			$inserted[] = [$row->getRoomId(), $row->getSourceType(), $row->getSourceId(), $row->getOwnerServer(),
+				$row->getOwnerActorType(), $row->getOwnerActorId(), $row->getRecipientActorType(), $row->getRecipientActorId(), $row->getShareId()];
+			return $row;
+		});
+
+		$shares = $this->sharer->shareSenderFolder($this->room, 'bill', $folder, ['paul@nc1.test', 'dave@nc2.test', 'carol@nc3.test']);
+
+		$this->assertSame([
+			['recipient' => 'paul@nc1.test', 'shareId' => '21'],
+			['recipient' => 'carol@nc3.test', 'shareId' => '22'],
+		], $shares);
+		// Dave is on Bill's own server: not in this phase
+		$this->assertSame(['paul@nc1.test', 'carol@nc3.test'], $sharedWith->getArrayCopy());
+		$this->assertSame([
+			[12, AttachmentShare::SOURCE_SENDER_FOLDER, '42', '', Attendee::ACTOR_USERS, 'bill', Attendee::ACTOR_FEDERATED_USERS, 'paul@nc1.test', '21'],
+			[12, AttachmentShare::SOURCE_SENDER_FOLDER, '42', '', Attendee::ACTOR_USERS, 'bill', Attendee::ACTOR_FEDERATED_USERS, 'carol@nc3.test', '22'],
+		], $inserted);
+	}
+
+	public function testExistingSenderFolderShareIsReusedWithoutAskingTheServer(): void {
+		$row = $this->row('21', AttachmentShare::ORIGIN_CREATED);
+		$row->setRecipientActorId('paul@nc1.test');
+		$this->mapper->method('findForRecipient')
+			->with(12, AttachmentShare::SOURCE_SENDER_FOLDER, '42', Attendee::ACTOR_FEDERATED_USERS, 'paul@nc1.test')
+			->willReturn($row);
+		$this->shareManager->method('getShareById')->with('ocFederatedSharing:21')->willReturn($this->createMock(IShare::class));
+		$this->mapper->method('findBySource')->willReturn([$row]);
+		$this->featureSupport->expects($this->never())->method('remoteSupportsUploads');
+		$this->shareManager->expects($this->never())->method('createShare');
+		$this->mapper->expects($this->never())->method('delete');
+
+		$this->assertSame(
+			[['recipient' => 'paul@nc1.test', 'shareId' => '21']],
+			$this->sharer->shareSenderFolder($this->room, 'bill', $this->senderFolder(), ['paul@nc1.test']),
+		);
+	}
+
+	public function testServersWithoutSupportOrUnreachableAreSkipped(): void {
+		$this->mapper->method('findForRecipient')->willReturn(null);
+		$this->mapper->method('findBySource')->willReturn([]);
+		$this->featureSupport->method('remoteSupportsUploads')
+			->willReturnCallback(fn (string $remote): ?bool => $remote === 'nc1.test' ? false : null);
+		$this->shareManager->expects($this->never())->method('createShare');
+
+		$this->assertSame([], $this->sharer->shareSenderFolder($this->room, 'bill', $this->senderFolder(), ['paul@nc1.test', 'carol@nc3.test']));
+	}
+
+	public function testFailedShareOnlySkipsThatRecipient(): void {
+		$this->featureSupport->method('remoteSupportsUploads')->willReturn(true);
+		$this->mapper->method('findForRecipient')->willReturn(null);
+		$this->mapper->method('findBySource')->willReturn([]);
+		$this->shareManager->method('getSharesBy')->willReturn([]);
+		$this->shareManager->method('newShare')->willReturnCallback(function (): IShare {
+			$share = $this->createMock(IShare::class);
+			foreach (['setNode', 'setShareType', 'setSharedBy', 'setSharedWith', 'setPermissions'] as $method) {
+				$share->method($method)->willReturnSelf();
+			}
+			return $share;
+		});
+		$created = $this->createMock(IShare::class);
+		$created->method('getId')->willReturn('22');
+		$calls = 0;
+		$this->shareManager->method('createShare')->willReturnCallback(function () use (&$calls, $created): IShare {
+			if (++$calls === 1) {
+				throw new \Exception('Remote server unreachable');
+			}
+			return $created;
+		});
+
+		$this->assertSame(
+			[['recipient' => 'carol@nc3.test', 'shareId' => '22']],
+			$this->sharer->shareSenderFolder($this->room, 'bill', $this->senderFolder(), ['paul@nc1.test', 'carol@nc3.test']),
+		);
+	}
+
+	public function testParticipantsWhoLeftLoseTheirShare(): void {
+		$row = $this->row('23', AttachmentShare::ORIGIN_CREATED);
+		$row->setRecipientActorId('eve@nc4.test');
+		$this->mapper->method('findBySource')->with(12, AttachmentShare::SOURCE_SENDER_FOLDER, '42')->willReturn([$row]);
+		$this->mapper->expects($this->once())->method('delete')->with($row);
+		$this->mapper->method('countByOwnerShareId')->with('', '23')->willReturn(0);
+		$remoteShare = $this->createMock(IShare::class);
+		$this->shareManager->method('getShareById')->with('ocFederatedSharing:23')->willReturn($remoteShare);
+		$this->shareManager->expects($this->once())->method('deleteShare')->with($remoteShare);
+
+		$this->assertSame([], $this->sharer->shareSenderFolder($this->room, 'bill', $this->senderFolder(), []));
 	}
 }
