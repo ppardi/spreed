@@ -432,6 +432,17 @@ export const useUploadStore = defineStore('upload', () => {
 					}
 				}
 			} catch (error) {
+				if (vuexStore.getters.conversation(token)?.remoteServer) {
+					// Federated conversations only work with the conversation folder: a plain upload would stay unshared in Talk/
+					console.error('Error while preparing the conversation folder of a federated conversation: ', error)
+					showError(t('spreed', 'Files can not be shared in this conversation right now'))
+					for (const [index, uploadedFile] of getInitialisedUploads(uploadId)) {
+						markFileAsFailedUpload({ uploadId, index })
+						vuexStore.dispatch('markTemporaryMessageAsFailed', { token, id: uploadedFile.temporaryMessage.id, uploadId, reason: 'failed-upload' })
+					}
+					EventBus.emit('upload-finished')
+					return
+				}
 				console.error('Error while creating conversation attachment folder, falling back to flat upload: ', error)
 			}
 		}

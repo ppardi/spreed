@@ -520,6 +520,22 @@ describe('fileUploadStore', () => {
 				expect(shareFile).toHaveBeenCalledTimes(1)
 			})
 
+			test('stops instead of falling back when the probe fails in a federated conversation', async () => {
+				conversationGetter.mockReturnValue({ type: 2, displayName: 'My Room', remoteServer: 'https://nc1.test' })
+				probeAttachmentFolder.mockRejectedValueOnce(new Error('boom'))
+
+				const file = { name: 'photo.jpg', type: 'image/jpeg', size: 100, lastModified: 0 }
+				uploadStore.initialiseUpload({ uploadId: 'upload-id1', token: TOKEN, files: [file] })
+
+				await uploadStore.uploadFiles({ token: TOKEN, uploadId: 'upload-id1', options: null })
+
+				expect(uploadMock).not.toHaveBeenCalled()
+				expect(shareFile).not.toHaveBeenCalled()
+				expect(postAttachment).not.toHaveBeenCalled()
+				expect(showError).toHaveBeenCalled()
+				expect(vuexStoreDispatch).toHaveBeenCalledWith('markTemporaryMessageAsFailed', expect.objectContaining({ token: TOKEN, reason: 'failed-upload' }))
+			})
+
 			test('falls back to shareFile when conversation-subfolders capability is false', async () => {
 				getTalkConfig.mockReturnValueOnce(false)
 				conversationGetter.mockReturnValue({ type: 2, displayName: 'My Room' })

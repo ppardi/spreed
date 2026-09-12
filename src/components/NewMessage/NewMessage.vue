@@ -371,6 +371,7 @@ import { useGroupwareStore } from '../../stores/groupware.ts'
 import { useSettingsStore } from '../../stores/settings.ts'
 import { useTokenStore } from '../../stores/token.ts'
 import { useUploadStore } from '../../stores/upload.ts'
+import { canUploadFilesInConversation } from '../../utils/attachments.ts'
 import { fetchClipboardContent } from '../../utils/clipboard.js'
 import { convertToUnix, ONE_DAY_IN_MS } from '../../utils/formattedTime.ts'
 import { getCustomDateOptions } from '../../utils/getCustomDateOptions.ts'
@@ -617,14 +618,14 @@ export default {
 
 		canShareFiles() {
 			return !this.actorStore.isActorGuest
-				&& !this.conversation.remoteServer // no attachments support in federated conversations
+				&& !this.conversation.remoteServer // no "Share from Nextcloud" or files from templates in federated conversations
 				&& !this.scheduleMessageTime && !this.showScheduledMessages
 		},
 
 		canUploadFiles() {
-			// TODO attachments should be allowed on both instances?
-			return getTalkConfig(this.token, 'attachments', 'allowed')
-				&& this.canShareFiles
+			return !this.actorStore.isActorGuest
+				// The conversation can be a placeholder without token while loading
+				&& canUploadFilesInConversation({ token: this.token, type: this.conversation.type, remoteServer: this.conversation.remoteServer })
 				&& !this.scheduleMessageTime && !this.showScheduledMessages
 		},
 
