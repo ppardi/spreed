@@ -168,7 +168,22 @@ class ListenerTest extends TestCase {
 	public function testFederatedParticipantRemoved(): void {
 		$this->config->method('isFederationEnabled')->willReturn(true);
 		$attendee = Attendee::fromRow(['actor_type' => Attendee::ACTOR_FEDERATED_USERS, 'actor_id' => 'bill@nc2.test']);
-		$this->sharer->expects($this->once())->method('unshareForRecipient')->with($this->room, 'bill@nc2.test');
+		$this->sharer->expects($this->once())->method('unshareForRecipient')->with($this->room, Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test');
+
+		$this->listener->handle(new AttendeeRemovedEvent($this->room, $attendee, AttendeeRemovedEvent::REASON_REMOVED, []));
+	}
+
+	public function testHostUserRemoved(): void {
+		$this->config->method('isFederationEnabled')->willReturn(true);
+		$attendee = Attendee::fromRow(['actor_type' => Attendee::ACTOR_USERS, 'actor_id' => 'paul']);
+		$this->sharer->expects($this->once())->method('unshareForRecipient')->with($this->room, Attendee::ACTOR_USERS, 'paul');
+
+		$this->listener->handle(new AttendeeRemovedEvent($this->room, $attendee, AttendeeRemovedEvent::REASON_LEFT, []));
+	}
+
+	public function testRemovedGuestIsIgnored(): void {
+		$attendee = Attendee::fromRow(['actor_type' => Attendee::ACTOR_GUESTS, 'actor_id' => 'abc']);
+		$this->sharer->expects($this->never())->method('unshareForRecipient');
 
 		$this->listener->handle(new AttendeeRemovedEvent($this->room, $attendee, AttendeeRemovedEvent::REASON_REMOVED, []));
 	}

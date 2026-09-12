@@ -47,6 +47,7 @@ class AttachmentSharer {
 		private readonly IRootFolder $rootFolder,
 		private readonly ITimeFactory $timeFactory,
 		private readonly IURLGenerator $url,
+		private readonly ReceivedShareLookup $receivedShares,
 		private readonly LoggerInterface $logger,
 	) {
 	}
@@ -150,8 +151,12 @@ class AttachmentSharer {
 		}
 	}
 
-	public function unshareForRecipient(Room $room, string $cloudId): void {
-		foreach ($this->mapper->findByRecipient($room->getId(), Attendee::ACTOR_FEDERATED_USERS, $cloudId) as $row) {
+	/**
+	 * Membership is access to the conversation's files: removes what the participant received
+	 * (federated shares of the host's files, a host user's copies of files participants sent from their servers)
+	 */
+	public function unshareForRecipient(Room $room, string $actorType, string $actorId): void {
+		foreach ($this->mapper->findByRecipient($room->getId(), $actorType, $actorId) as $row) {
 			$this->removeShareAndRow($row);
 		}
 	}
@@ -321,11 +326,20 @@ class AttachmentSharer {
 	}
 
 	/**
-	 * Removes the row, and the federated share when Talk created it and no other row uses it anymore
-	 * (the same federated share can serve several sources, e.g. one file shared into two conversations)
+	 * Removes a row and what it stands for, and the federated share when Talk created it and no other row uses it
+	 * anymore (the same federated share can serve several sources, e.g. one file shared into two conversations)
 	 */
 	private function removeShareAndRow(AttachmentShare $row): void {
 		$this->mapper->delete($row);
+		if ($row->getSourceType() === AttachmentShare::SOURCE_REMOTE_FOLDER) {
+			// Host row of a file a participant sent from their own server: the share belongs to that server (ruling R8).
+			// A host user's received copy is removed, the sender's server is notified by files_sharing (ruling R9).
+			// Recipients on other servers keep theirs until the sender's next post drops them (design §7.1).
+			if ($row->getRecipientActorType() === Attendee::ACTOR_USERS) {
+				$this->receivedShares->decline($row->getRecipientActorId(), $row->getOwnerServer(), $row->getShareId());
+			}
+			return;
+		}
 		if ($row->getOrigin() !== AttachmentShare::ORIGIN_CREATED
 			|| $this->mapper->countByOwnerShareId('', $row->getShareId()) > 0) {
 			return;

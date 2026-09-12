@@ -9,11 +9,18 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Tests\php\Federation\Attachments;
 
+use OCA\Files_Sharing\External\ExternalShare;
+use OCA\Files_Sharing\External\Manager;
 use OCA\Talk\Federation\Attachments\ReceivedShareLookup;
+use OCP\App\IAppManager;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\IDBConnection;
+use OCP\IUser;
+use OCP\IUserManager;
 use OCP\Server;
 use PHPUnit\Framework\Attributes\Group;
+use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
 use Test\TestCase;
 
 #[Group('DB')]
@@ -24,6 +31,7 @@ class ReceivedShareLookupTest extends TestCase {
 
 	public function setUp(): void {
 		parent::setUp();
+		Server::get(IAppManager::class)->loadApp('files_sharing');
 		$this->db = Server::get(IDBConnection::class);
 	}
 
@@ -62,10 +70,45 @@ class ReceivedShareLookupTest extends TestCase {
 		$this->addReceivedShare('https://nc3.test/', '6', 'bill', '/Other', 1);
 		$this->addReceivedShare('https://nc1.test/', '7', 'bill', '/Pending', 0);
 
-		$lookup = new ReceivedShareLookup($this->db);
+		$lookup = $this->lookup();
 		$this->assertSame('/Room-both-wqhg8fxn', $lookup->findAccepted('bill', 'https://nc1.test', '6'));
 		$this->assertSame('/Other', $lookup->findAccepted('bill', 'nc3.test', '6'));
 		$this->assertNull($lookup->findAccepted('bill', 'https://nc1.test', '7'), 'pending share');
 		$this->assertNull($lookup->findAccepted('carol', 'https://nc1.test', '6'), 'other user');
+	}
+
+	private function lookup(?Manager $manager = null): ReceivedShareLookup {
+		$container = $this->createMock(ContainerInterface::class);
+		$container->method('get')->with(Manager::class)->willReturn($manager ?? $this->createMock(Manager::class));
+		$bill = $this->createMock(IUser::class);
+		$bill->method('getUID')->willReturn('bill');
+		$userManager = $this->createMock(IUserManager::class);
+		$userManager->method('get')->willReturnCallback(fn (string $uid): ?IUser => $uid === 'bill' ? $bill : null);
+		return new ReceivedShareLookup($this->db, $userManager, $container, $this->createMock(LoggerInterface::class));
+	}
+
+	public function testDeclineRemovesTheShareThroughFilesSharing(): void {
+		// Pending shares count too: a user who never accepted must not get the files later
+		$this->addReceivedShare('https://nc2.test/', '21', 'bill', '/Bill-bill', 0);
+		$id = (string)end($this->ids);
+		$externalShare = $this->createMock(ExternalShare::class);
+		$manager = $this->createMock(Manager::class);
+		$manager->expects($this->once())->method('getShare')->with($id, $this->isInstanceOf(IUser::class))->willReturn($externalShare);
+		$manager->expects($this->once())->method('declineShare')->with($externalShare, $this->isInstanceOf(IUser::class))->willReturn(true);
+
+		$this->assertTrue($this->lookup($manager)->decline('bill', 'https://nc2.test', '21'));
+	}
+
+	public function testDeclineWithoutShare(): void {
+		$manager = $this->createMock(Manager::class);
+		$manager->expects($this->never())->method('declineShare');
+		$this->assertFalse($this->lookup($manager)->decline('bill', 'https://nc2.test', '999'));
+	}
+
+	public function testDeclineNeverThrows(): void {
+		$this->addReceivedShare('https://nc2.test/', '22', 'bill', '/Bill-bill (2)', 1);
+		$manager = $this->createMock(Manager::class);
+		$manager->method('getShare')->willThrowException(new \RuntimeException('files_sharing broke'));
+		$this->assertFalse($this->lookup($manager)->decline('bill', 'https://nc2.test', '22'));
 	}
 }

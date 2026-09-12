@@ -166,8 +166,11 @@ class Listener implements IEventListener {
 	}
 
 	private function onAttendeeRemoved(Room $room, Attendee $attendee): void {
-		if ($attendee->getActorType() === Attendee::ACTOR_FEDERATED_USERS) {
-			$this->sharer->unshareForRecipient($room, $attendee->getActorId());
+		if ($attendee->getActorType() === Attendee::ACTOR_FEDERATED_USERS
+			|| $attendee->getActorType() === Attendee::ACTOR_USERS) {
+			// Their federated shares go, and a host user's copies of files that participants sent from their own
+			// servers (design §7.1). In a proxy conversation nothing is recorded for its local users.
+			$this->sharer->unshareForRecipient($room, $attendee->getActorType(), $attendee->getActorId());
 		}
 	}
 

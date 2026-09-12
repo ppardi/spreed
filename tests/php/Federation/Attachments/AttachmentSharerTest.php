@@ -11,6 +11,7 @@ namespace OCA\Talk\Tests\php\Federation\Attachments;
 
 use OCA\Talk\Federation\Attachments\AttachmentSharer;
 use OCA\Talk\Federation\Attachments\FeatureSupport;
+use OCA\Talk\Federation\Attachments\ReceivedShareLookup;
 use OCA\Talk\Model\AttachmentShare;
 use OCA\Talk\Model\AttachmentShareMapper;
 use OCA\Talk\Model\Attendee;
@@ -42,6 +43,7 @@ class AttachmentSharerTest extends TestCase {
 	protected ICloudIdManager&MockObject $cloudIdManager;
 	protected IRootFolder&MockObject $rootFolder;
 	protected IURLGenerator&MockObject $url;
+	protected ReceivedShareLookup&MockObject $receivedShares;
 	protected Room&MockObject $room;
 	protected IShare&MockObject $roomShare;
 	protected Folder&MockObject $sharedFolder;
@@ -80,6 +82,7 @@ class AttachmentSharerTest extends TestCase {
 
 		$this->url = $this->createMock(IURLGenerator::class);
 		$this->url->method('getAbsoluteURL')->with('/')->willReturn('https://nc2.test/');
+		$this->receivedShares = $this->createMock(ReceivedShareLookup::class);
 
 		$this->sharer = new AttachmentSharer(
 			$this->shareManager,
@@ -91,6 +94,7 @@ class AttachmentSharerTest extends TestCase {
 			$this->rootFolder,
 			$timeFactory,
 			$this->url,
+			$this->receivedShares,
 			$this->createMock(LoggerInterface::class),
 		);
 	}
@@ -391,7 +395,38 @@ class AttachmentSharerTest extends TestCase {
 		$this->shareManager->expects($this->once())->method('deleteShare')->with($remoteShare);
 		$this->mapper->expects($this->once())->method('delete')->with($row);
 
-		$this->sharer->unshareForRecipient($this->room, 'bill@nc2.test');
+		$this->sharer->unshareForRecipient($this->room, Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test');
+	}
+
+	private function remoteFolderRow(string $recipientType, string $recipientId): AttachmentShare {
+		$row = $this->row('31', AttachmentShare::ORIGIN_ADOPTED);
+		$row->setSourceType(AttachmentShare::SOURCE_REMOTE_FOLDER);
+		$row->setOwnerServer('https://nc2.test');
+		$row->setRecipientActorType($recipientType);
+		$row->setRecipientActorId($recipientId);
+		return $row;
+	}
+
+	public function testRemovingAHostUserDeclinesTheirReceivedCopy(): void {
+		$row = $this->remoteFolderRow(Attendee::ACTOR_USERS, 'paul');
+		$this->mapper->method('findByRecipient')->with(12, Attendee::ACTOR_USERS, 'paul')->willReturn([$row]);
+		$this->mapper->expects($this->once())->method('delete')->with($row);
+		$this->receivedShares->expects($this->once())->method('decline')->with('paul', 'https://nc2.test', '31');
+		// The share belongs to the sender's server: never a local share with the same id
+		$this->shareManager->expects($this->never())->method('getShareById');
+		$this->shareManager->expects($this->never())->method('deleteShare');
+
+		$this->sharer->unshareForRecipient($this->room, Attendee::ACTOR_USERS, 'paul');
+	}
+
+	public function testThirdServerRecipientsKeepTheirShareUntilTheSendersNextPost(): void {
+		$row = $this->remoteFolderRow(Attendee::ACTOR_FEDERATED_USERS, 'carol@nc3.test');
+		$this->mapper->method('findByRoom')->with(12)->willReturn([$row]);
+		$this->mapper->expects($this->once())->method('delete')->with($row);
+		$this->receivedShares->expects($this->never())->method('decline');
+		$this->shareManager->expects($this->never())->method('deleteShare');
+
+		$this->sharer->unshareRoom($this->room);
 	}
 
 	public function testAdoptedShareIsNeverDeleted(): void {

@@ -81,3 +81,15 @@ Feature: federation/attachments
     And user "participant1" sees the last file message in room "room" as not available
     When user "participant1" accepts all pending federated shares
     Then user "participant1" sees the last file message in room "room" as local file "bill.txt"
+
+  Scenario: Removing a user of the host removes their copy of the remote participant's files
+    Given user "participant3" exists
+    And user "participant1" adds user "participant3" to room "room" with 200 (v4)
+    And using server "REMOTE"
+    And user "participant2" uploads file "bill.txt" with content "from bill" to conversation folder for room "LOCAL::room" with name "room"
+    And user "participant2" posts file "bill.txt" from conversation folder of room "LOCAL::room" with name "room" with 200 (v1)
+    And using server "LOCAL"
+    And user "participant3" accepts all pending federated shares
+    And user "participant3" has 1 accepted federated shares
+    When user "participant1" removes user "participant3" from room "room" with 200 (v4)
+    Then user "participant3" has 0 accepted federated shares
