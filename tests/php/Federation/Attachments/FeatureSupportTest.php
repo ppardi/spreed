@@ -25,6 +25,8 @@ class FeatureSupportTest extends TestCase {
 	protected LoggerInterface&MockObject $logger;
 	/** @var array<string, array{value: mixed, ttl: int}> */
 	protected array $cached = [];
+	/** @var list<bool> */
+	protected array $skipCacheArguments = [];
 	protected FeatureSupport $featureSupport;
 
 	public function setUp(): void {
@@ -59,11 +61,12 @@ class FeatureSupportTest extends TestCase {
 	public function testRemoteSupports(): void {
 		$this->discoveryService->expects($this->once())
 			->method('discover')
-			->with('nc2.test', false)
+			// The first lookup in 10 minutes refreshes the discovery document
+			->with('nc2.test', true)
 			->willReturn($this->supportingProvider());
 
 		$this->assertTrue($this->featureSupport->remoteSupports('nc2.test'));
-		$this->assertSame([], $this->cached);
+		$this->assertSame(['refresh/talk-attachments-v1/https://nc2.test'], array_keys($this->cached));
 	}
 
 	public function testRemoteWithoutProtocolEntry(): void {
@@ -73,7 +76,65 @@ class FeatureSupportTest extends TestCase {
 		$this->discoveryService->method('discover')->willReturn($provider);
 
 		$this->assertFalse($this->featureSupport->remoteSupports('nc2.test'));
-		$this->assertSame([], $this->cached);
+		$this->assertArrayNotHasKey('https://nc2.test', $this->cached, 'A definite answer is not unknown');
+	}
+
+	/**
+	 * Nextcloud caches discovery documents for 24 hours: the cached one is from before the other server's upgrade to v2
+	 */
+	private function discoverWithStaleCache(): void {
+		$stale = $this->createMock(IOCMProvider::class);
+		$stale->method('extractProtocolEntry')->willThrowException(new OCMArgumentException('talk-attachments-v2'));
+		$fresh = $this->createMock(IOCMProvider::class);
+		$fresh->method('extractProtocolEntry')->willReturn('/ocs/v2.php/apps/spreed/api/');
+
+		$this->discoveryService->method('discover')
+			->willReturnCallback(function (string $remote, bool $skipCache) use ($stale, $fresh): IOCMProvider {
+				$this->skipCacheArguments[] = $skipCache;
+				return $skipCache ? $fresh : $stale;
+			});
+	}
+
+	public function testCachedDocumentWithoutTheProtocolIsRefreshed(): void {
+		$this->discoverWithStaleCache();
+
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
+		$this->assertSame([true], $this->skipCacheArguments);
+		$this->assertSame(600, $this->cached['refresh/talk-attachments-v2/https://nc1.test']['ttl'] ?? null);
+	}
+
+	public function testDocumentIsRefreshedAtMostOnceIn10Minutes(): void {
+		$this->discoverWithStaleCache();
+
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
+		// In production the cache now holds the refreshed document; the mock keeps answering with the stale one
+		$this->assertFalse($this->featureSupport->remoteSupportsUploads('https://NC1.test/'));
+		$this->assertSame([true, false], $this->skipCacheArguments, 'Asked the server again only once');
+	}
+
+	public function testRefreshIsPerProtocol(): void {
+		$this->discoverWithStaleCache();
+
+		$this->assertTrue($this->featureSupport->remoteSupports('nc1.test'));
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
+		$this->assertSame([true, true], $this->skipCacheArguments);
+	}
+
+	public function testRefreshAfter10Minutes(): void {
+		$this->discoverWithStaleCache();
+
+		$this->featureSupport->remoteSupportsUploads('nc1.test');
+		unset($this->cached['refresh/talk-attachments-v2/https://nc1.test']); // expired
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
+		$this->assertSame([true, true], $this->skipCacheArguments);
+	}
+
+	public function testLookupsSkippingTheCacheLeaveTheRefreshMarkerAlone(): void {
+		$this->discoverWithStaleCache();
+
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test', true));
+		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
+		$this->assertSame([true, true], $this->skipCacheArguments);
 	}
 
 	public function testRemoteUnreachableIsUnknown(): void {
@@ -120,7 +181,7 @@ class FeatureSupportTest extends TestCase {
 			->method('extractProtocolEntry')
 			->with('talk-room', 'talk-attachments-v2')
 			->willReturn('/ocs/v2.php/apps/spreed/api/');
-		$this->discoveryService->method('discover')->with('nc1.test', false)->willReturn($provider);
+		$this->discoveryService->method('discover')->with('nc1.test', true)->willReturn($provider);
 
 		$this->assertTrue($this->featureSupport->remoteSupportsUploads('nc1.test'));
 	}

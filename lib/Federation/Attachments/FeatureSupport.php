@@ -36,19 +36,23 @@ class FeatureSupport {
 
 	/** Seconds during which a server whose support is unknown is not asked again (unless skipping the cache) */
 	private const UNKNOWN_TTL = 300;
+	/** Seconds during which a server's discovery document is taken from Nextcloud's cache (per protocol) */
+	private const REFRESH_TTL = 600;
 
-	private ICache $unknownRemotes;
+	/** Servers whose support is unknown, and when discovery documents were last refreshed */
+	private ICache $markers;
 
 	public function __construct(
 		private readonly IOCMDiscoveryService $discoveryService,
 		ICacheFactory $cacheFactory,
 		private readonly LoggerInterface $logger,
 	) {
-		$this->unknownRemotes = $cacheFactory->createDistributed('talk/federated-attachments');
+		$this->markers = $cacheFactory->createDistributed('talk/federated-attachments');
 	}
 
 	/**
-	 * Whether the server can receive federated attachments (discovery data is cached by Nextcloud for 24h)
+	 * Whether the server can receive federated attachments (discovery data is cached by Nextcloud for 24h,
+	 * refreshed here at most every 10 minutes)
 	 *
 	 * @param bool $skipCache Ask the server again, even when it was recently unreachable
 	 * @return bool|null True when supported, false when definitely not supported,
@@ -70,9 +74,22 @@ class FeatureSupport {
 
 	private function remoteHasProtocol(string $remote, string $protocol, bool $skipCache): ?bool {
 		$key = ServerUrl::normalize($remote);
-		if (!$skipCache && $this->unknownRemotes->get($key) !== null) {
-			// Don't make users' requests wait for the discovery timeouts again and again
-			return null;
+		if (!$skipCache) {
+			if ($this->markers->get($key) !== null) {
+				// Don't make users' requests wait for the discovery timeouts again and again
+				return null;
+			}
+
+			// Nextcloud keeps discovery documents for 24 hours, and nothing clears them when the other server is
+			// upgraded: a new protocol would stay missing for up to a day while clients (live capabilities) already
+			// offer the feature. So the first lookup in 10 minutes asks the server again. Not only once the cached
+			// document turned out to lack the protocol: OCMDiscoveryService::discover() returns the document it
+			// already loaded in this process even when told to skip the cache, so a second call would get the same.
+			$refreshKey = 'refresh/' . $protocol . '/' . $key;
+			if ($this->markers->get($refreshKey) === null) {
+				$this->markers->set($refreshKey, 1, self::REFRESH_TTL);
+				$skipCache = true;
+			}
 		}
 
 		try {
@@ -84,12 +101,12 @@ class FeatureSupport {
 		} catch (\Throwable $e) {
 			// OCMProviderException (unreachable, invalid response) or anything unexpected
 			$this->logger->warning('Could not find out whether ' . $remote . ' supports federated attachments, trying again later', ['exception' => $e]);
-			$this->unknownRemotes->set($key, 1, self::UNKNOWN_TTL);
+			$this->markers->set($key, 1, self::UNKNOWN_TTL);
 			return null;
 		}
 
 		if ($skipCache) {
-			$this->unknownRemotes->remove($key);
+			$this->markers->remove($key);
 		}
 		return $supported;
 	}
