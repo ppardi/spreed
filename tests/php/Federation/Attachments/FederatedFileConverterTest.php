@@ -17,6 +17,8 @@ use OCA\Talk\Federation\Attachments\LocalFileResolver;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCP\Federation\ICloudId;
+use OCP\Federation\ICloudIdManager;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
@@ -44,6 +46,7 @@ class FederatedFileConverterTest extends TestCase {
 	protected IUserSession&MockObject $userSession;
 	protected IRootFolder&MockObject $rootFolder;
 	protected IURLGenerator&MockObject $url;
+	protected ICloudIdManager&MockObject $cloudIdManager;
 	protected Room&MockObject $room;
 	protected Participant&MockObject $participant;
 	protected FederatedFileConverter $converter;
@@ -71,6 +74,15 @@ class FederatedFileConverterTest extends TestCase {
 		$this->rootFolder = $this->createMock(IRootFolder::class);
 		$this->url = $this->createMock(IURLGenerator::class);
 		$this->url->method('getAbsoluteURL')->with('/')->willReturn('https://nc2.test/');
+		$this->cloudIdManager = $this->createMock(ICloudIdManager::class);
+		$this->cloudIdManager->method('resolveCloudId')->willReturnCallback(function (string $id): ICloudId {
+			if (!str_contains($id, '@')) {
+				throw new \InvalidArgumentException('Invalid cloud id');
+			}
+			$cloudId = $this->createMock(ICloudId::class);
+			$cloudId->method('getRemote')->willReturn(substr($id, strrpos($id, '@') + 1));
+			return $cloudId;
+		});
 
 		$this->converter = new FederatedFileConverter(
 			$this->resolver,
@@ -78,6 +90,7 @@ class FederatedFileConverterTest extends TestCase {
 			new ConversationFolder($this->config, $this->userSession),
 			$this->rootFolder,
 			$this->url,
+			$this->cloudIdManager,
 			$l,
 			$this->createMock(LoggerInterface::class),
 		);
@@ -161,6 +174,61 @@ class FederatedFileConverterTest extends TestCase {
 			'messageParameters' => ['file' => $reference],
 		]);
 		$this->assertSame(['type' => 'file', 'id' => '88'], $converted['messageParameters']['file']);
+	}
+
+	private function participantInvitedAs(string $cloudId): Participant&MockObject {
+		$participant = $this->createMock(Participant::class);
+		$participant->method('getAttendee')->willReturn(Attendee::fromRow([
+			'actor_type' => Attendee::ACTOR_USERS,
+			'actor_id' => 'bill',
+			'invited_cloud_id' => $cloudId,
+		]));
+		return $participant;
+	}
+
+	public function testOwnFileIsFoundViaTheCloudIdTheHostKnows(): void {
+		// The host computes the reference's server from Bill's cloud id; Bill browses his server under another URL
+		// (an alias host, or a proxy without overwriteprotocol)
+		$this->loginAs('bill');
+		$reference = ['type' => 'federated-file', 'name' => 'mine.png', 'server' => 'cloud.bill.test', 'file-id' => '88'];
+		$node = $this->createMock(File::class);
+		$userFolder = $this->createMock(Folder::class);
+		$userFolder->expects($this->once())->method('getFirstNodeById')->with(88)->willReturn($node);
+		$this->rootFolder->method('getUserFolder')->with('bill')->willReturn($userFolder);
+		$this->builder->method('forLocalNode')->with($node, $reference)->willReturn(['type' => 'file', 'id' => '88']);
+
+		$converted = $this->converter->convertMessage($this->room, $this->participantInvitedAs('bill@cloud.bill.test'), [
+			'message' => '{file}',
+			'messageParameters' => ['file' => $reference],
+		]);
+		$this->assertSame(['type' => 'file', 'id' => '88'], $converted['messageParameters']['file']);
+	}
+
+	public function testOwnFileFallsBackToTheServerUrlWhenTheCloudIdIsInvalid(): void {
+		$this->loginAs('bill');
+		$reference = ['type' => 'federated-file', 'name' => 'mine.png', 'server' => 'https://nc2.test', 'file-id' => '88'];
+		$node = $this->createMock(File::class);
+		$userFolder = $this->createMock(Folder::class);
+		$userFolder->expects($this->once())->method('getFirstNodeById')->with(88)->willReturn($node);
+		$this->rootFolder->method('getUserFolder')->with('bill')->willReturn($userFolder);
+		$this->builder->method('forLocalNode')->willReturn(['type' => 'file', 'id' => '88']);
+
+		$converted = $this->converter->convertMessage($this->room, $this->participantInvitedAs('not a cloud id'), [
+			'message' => '{file}',
+			'messageParameters' => ['file' => $reference],
+		]);
+		$this->assertSame(['type' => 'file', 'id' => '88'], $converted['messageParameters']['file']);
+	}
+
+	public function testFileIdOfAnotherServerIsNotResolvedWithTheCloudIdEither(): void {
+		$this->loginAs('bill');
+		$this->rootFolder->expects($this->never())->method('getUserFolder');
+
+		$converted = $this->converter->convertMessage($this->room, $this->participantInvitedAs('bill@cloud.bill.test'), [
+			'message' => '{file}',
+			'messageParameters' => ['file' => ['type' => 'federated-file', 'name' => 'mine.png', 'server' => 'https://nc3.test', 'file-id' => '88']],
+		]);
+		$this->assertSame('*"mine.png" is not available*', $converted['message']);
 	}
 
 	public function testFileIdOfAnotherServerIsNotResolved(): void {

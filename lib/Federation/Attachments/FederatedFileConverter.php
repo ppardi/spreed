@@ -12,6 +12,7 @@ namespace OCA\Talk\Federation\Attachments;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCP\Federation\ICloudIdManager;
 use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\IL10N;
@@ -32,6 +33,7 @@ class FederatedFileConverter {
 		private readonly ConversationFolder $conversationFolder,
 		private readonly IRootFolder $rootFolder,
 		private readonly IURLGenerator $url,
+		private readonly ICloudIdManager $cloudIdManager,
 		private readonly IL10N $l,
 		private readonly LoggerInterface $logger,
 	) {
@@ -112,7 +114,7 @@ class FederatedFileConverter {
 			. ($ownFile ? 'file:' . $reference['file-id'] : 'share:' . $reference['share-id'] . '#' . $reference['path']);
 		if (!array_key_exists($key, $this->resolved)) {
 			$this->resolved[$key] = $ownFile
-				? $this->resolveOwnFile($userId, $reference['server'], $reference['file-id'])
+				? $this->resolveOwnFile($attendee, $reference['server'], $reference['file-id'])
 				// A share the user received: of the host's files, or of files a participant sent from their own
 				// server (design §6). The lookup only finds shares this user accepted from that server (ruling R5).
 				: $this->resolver->resolve($userId, $reference['server'], $reference['share-id'], $reference['path'], $this->conversationFolder->targetForViewer($room, $userId));
@@ -123,11 +125,27 @@ class FederatedFileConverter {
 	/**
 	 * The viewer sent the file from this server (design §5.1): only their own storage is searched
 	 */
-	private function resolveOwnFile(string $userId, string $server, string $fileId): ?Node {
-		if (!ServerUrl::equals($server, $this->url->getAbsoluteURL('/')) || !ctype_digit($fileId)) {
+	private function resolveOwnFile(Attendee $attendee, string $server, string $fileId): ?Node {
+		if (!ctype_digit($fileId) || !ServerUrl::equals($server, $this->serverAsTheHostKnowsIt($attendee))) {
 			return null;
 		}
-		return $this->rootFolder->getUserFolder($userId)->getFirstNodeById((int)$fileId);
+		return $this->rootFolder->getUserFolder($attendee->getActorId())->getFirstNodeById((int)$fileId);
+	}
+
+	/**
+	 * The host computes the reference's server from the sender's cloud id: this server's own URL can differ from it
+	 * (an alias host, a proxy without `overwriteprotocol`), the remote of the cloud id the host invited can't
+	 */
+	private function serverAsTheHostKnowsIt(Attendee $attendee): string {
+		$invitedCloudId = (string)$attendee->getInvitedCloudId();
+		if ($invitedCloudId !== '') {
+			try {
+				return $this->cloudIdManager->resolveCloudId($invitedCloudId)->getRemote();
+			} catch (\InvalidArgumentException) {
+				// Fall back to this server's URL
+			}
+		}
+		return $this->url->getAbsoluteURL('/');
 	}
 
 	private function withFallback(array $message, string $fileName): array {
