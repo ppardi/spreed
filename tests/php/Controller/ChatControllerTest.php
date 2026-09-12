@@ -16,6 +16,7 @@ use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Chat\ReactionManager;
 use OCA\Talk\Config;
 use OCA\Talk\Controller\ChatController;
+use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Federation\Attachments\RemoteShareRegistry;
 use OCA\Talk\GuestManager;
 use OCA\Talk\Manager;
@@ -98,6 +99,7 @@ class ChatControllerTest extends TestCase {
 	private ConversationFolderService&MockObject $conversationFolderService;
 	private Config&MockObject $talkConfig;
 	private RemoteShareRegistry&MockObject $remoteShareRegistry;
+	private FeatureSupport&MockObject $featureSupport;
 
 	protected Room&MockObject $room;
 
@@ -147,6 +149,7 @@ class ChatControllerTest extends TestCase {
 		$this->conversationFolderService = $this->createMock(ConversationFolderService::class);
 		$this->talkConfig = $this->createMock(Config::class);
 		$this->remoteShareRegistry = $this->createMock(RemoteShareRegistry::class);
+		$this->featureSupport = $this->createMock(FeatureSupport::class);
 
 		$this->room = $this->createMock(Room::class);
 
@@ -203,6 +206,7 @@ class ChatControllerTest extends TestCase {
 			$this->conversationFolderService,
 			$this->talkConfig,
 			$this->remoteShareRegistry,
+			$this->featureSupport,
 		);
 	}
 

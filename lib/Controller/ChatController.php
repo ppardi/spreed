@@ -20,6 +20,7 @@ use OCA\Talk\Config;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\ChatSummaryException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Federation\Attachments\RemoteFile;
 use OCA\Talk\Federation\Attachments\RemoteShareRegistry;
 use OCA\Talk\GuestManager;
@@ -150,6 +151,7 @@ class ChatController extends AEnvironmentAwareOCSController {
 		private readonly ConversationFolderService $conversationFolderService,
 		private readonly Config $talkConfig,
 		private readonly RemoteShareRegistry $remoteShareRegistry,
+		private readonly FeatureSupport $featureSupport,
 	) {
 		parent::__construct($appName, $request);
 	}
@@ -2412,6 +2414,7 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 * with the room, so other participants cannot see in-progress uploads or files
 	 * from aborted messages.  Files are moved into the shared subfolder atomically
 	 * when the attachment endpoint is called.
+	 * In federated conversations the folder stays on this server and is shared with the other participants when a file is posted.
 	 *
 	 * Recommended client flow:
 	 * 1. Call this endpoint to obtain the Draft folder path and predicted final names.
@@ -2428,9 +2431,10 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 *
 	 * 200: Draft folder path and rename map returned
 	 * 500: Could not prepare the conversation folder
-	 * 501: Conversation subfolders feature is disabled
+	 * 501: Conversation subfolders feature is disabled, or files can not be shared in this federated conversation
 	 * 507: User storage quota exceeded
 	 */
+	#[FederationSupported]
 	#[NoAdminRequired]
 	#[RequireModeratorOrNoLobby]
 	#[RequireLoggedInParticipant]
@@ -2447,6 +2451,14 @@ class ChatController extends AEnvironmentAwareOCSController {
 		if (!$this->talkConfig->isConversationSubfoldersEnabled()) {
 			$this->conversationFolderService->ensureAttachmentFolderExists($uid);
 			return new DataResponse(['error' => $this->l->t('Conversation subfolders are disabled')], Http::STATUS_NOT_IMPLEMENTED);
+		}
+
+		if ($this->room->isFederatedConversation()) {
+			if (!$this->federatedAttachmentsAvailable()) {
+				return new DataResponse(['error' => $this->l->t('Files can not be shared in this federated conversation')], Http::STATUS_NOT_IMPLEMENTED);
+			}
+			// Federated shares are read-only
+			$allowUpdate = false;
 		}
 
 		try {
@@ -2487,16 +2499,18 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 * @param string $fileName Desired final file name; the service resolves conflicts
 	 *                         by appending " (1)", " (2)", … if already taken
 	 * @param bool $allowUpdate Allow recipients to modify shared files
-	 * @return DataResponse<Http::STATUS_OK, array{renames: list<array<string, string>>}, array{}>|DataResponse<Http::STATUS_NOT_FOUND|Http::STATUS_UNPROCESSABLE_ENTITY|Http::STATUS_INTERNAL_SERVER_ERROR|Http::STATUS_INSUFFICIENT_STORAGE|Http::STATUS_BAD_REQUEST|Http::STATUS_NOT_IMPLEMENTED, array{error: string}, array{}>
+	 * @return DataResponse<Http::STATUS_OK, array{renames: list<array<string, string>>}, array{}>|DataResponse<Http::STATUS_NOT_FOUND|Http::STATUS_UNPROCESSABLE_ENTITY|Http::STATUS_INTERNAL_SERVER_ERROR|Http::STATUS_INSUFFICIENT_STORAGE|Http::STATUS_BAD_REQUEST|Http::STATUS_FORBIDDEN|Http::STATUS_NOT_IMPLEMENTED, array{error: string}, array{}>
 	 *
 	 * 200: File moved from Draft and posted as chat message
 	 * 400: Path does not point to a file
+	 * 403: Not allowed by the conversation's host (federated conversations)
 	 * 404: File not found
 	 * 422: File is not inside the conversation Draft folder for this room
 	 * 500: Could not prepare the conversation folder
-	 * 501: Conversation subfolders feature is disabled
+	 * 501: Conversation subfolders feature is disabled, or files can not be shared in this federated conversation
 	 * 507: User storage quota exceeded
 	 */
+	#[FederationSupported]
 	#[NoAdminRequired]
 	#[RequireModeratorOrNoLobby]
 	#[RequireLoggedInParticipant]
@@ -2509,6 +2523,14 @@ class ChatController extends AEnvironmentAwareOCSController {
 	public function postAttachmentToRoom(string $filePath, string $referenceId, string $talkMetaData = '', string $fileName = '', bool $allowUpdate = false): DataResponse {
 		if (!$this->talkConfig->isConversationSubfoldersEnabled()) {
 			return new DataResponse(['error' => $this->l->t('Conversation subfolders are disabled')], Http::STATUS_NOT_IMPLEMENTED);
+		}
+
+		if ($this->room->isFederatedConversation()) {
+			if (!$this->federatedAttachmentsAvailable()) {
+				return new DataResponse(['error' => $this->l->t('Files can not be shared in this federated conversation')], Http::STATUS_NOT_IMPLEMENTED);
+			}
+			// Federated shares are read-only
+			$allowUpdate = false;
 		}
 
 		/** @var string $uid — non-null, guaranteed by RequireLoggedInParticipant */
@@ -2552,12 +2574,33 @@ class ChatController extends AEnvironmentAwareOCSController {
 		$renameTo = $result['to'];
 		$node = $result['node'];
 
+		if ($this->room->isFederatedConversation()) {
+			// The conversation is hosted elsewhere: share the folder with the participants there, then the host posts the message
+			/** @var \OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController $proxy */
+			$proxy = \OCP\Server::get(\OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController::class);
+			$error = $proxy->postAttachment($this->room, $this->participant, $subfolder, $node, $talkMetaData, $referenceId);
+			if ($error !== null) {
+				return $error;
+			}
+			return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
+		}
+
 		// Create the file_shared system message referencing the file by node ID.
 		// The parameters use 'fileId' instead of 'share' so no per-file TYPE_ROOM
 		// share is needed; access is controlled by the folder-level share.
 		$this->postFileMessage(['fileId' => (string)$node->getId()], $node->getMimeType(), $talkMetaData, $referenceId, Attendee::ACTOR_USERS, $uid);
 
 		return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
+	}
+
+	/**
+	 * In a federated conversation the files stay on this server and are shared with the other participants:
+	 * needs direction B on the host (design §8, ruling R10), and not in public conversations (as on the host)
+	 */
+	private function federatedAttachmentsAvailable(): bool {
+		return $this->room->getType() !== Room::TYPE_PUBLIC
+			// Not only talk-attachments-v1: build 24.0.5.1 lists that but has no endpoint for these files (ruling R10)
+			&& $this->featureSupport->remoteSupportsUploads($this->room->getRemoteServer()) === true;
 	}
 
 	/**

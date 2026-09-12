@@ -52,7 +52,8 @@ trait FederatedAttachmentsTrait {
 	public function userSeesTheLastFileMessageAsNotAvailable(string $user, string $identifier): void {
 		$message = $this->getLastCommentInRoom($user, $identifier);
 		Assert::assertArrayNotHasKey('file', $message['messageParameters'] ?: []);
-		Assert::assertStringContainsString('not available', $message['message']);
+		// Remote viewers get their server's fallback, users of the host Talk's "no longer available" text
+		Assert::assertMatchesRegularExpression('/(not|no longer) available/', $message['message']);
 	}
 
 	private function getLastCommentInRoom(string $user, string $identifier): array {

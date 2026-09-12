@@ -12,6 +12,7 @@ namespace OCA\Talk\Federation\Proxy\TalkV1\Controller;
 use OCA\Talk\CachePrefix;
 use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
+use OCA\Talk\Federation\Attachments\AttachmentSharer;
 use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Proxy\TalkV1\ProxyRequest;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
@@ -21,8 +22,12 @@ use OCA\Talk\ResponseDefinitions;
 use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Service\RoomFormatter;
+use OCA\Talk\Share\Helper\FilesMetadataCache;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\DataResponse;
+use OCP\Files\Folder;
+use OCP\Files\Node;
+use OCP\FilesMetadata\Exceptions\FilesMetadataNotFoundException;
 use OCP\ICache;
 use OCP\ICacheFactory;
 
@@ -43,6 +48,8 @@ class ChatController {
 		private readonly RoomFormatter $roomFormatter,
 		private readonly Notifier $notifier,
 		ICacheFactory $cacheFactory,
+		private readonly AttachmentSharer $attachmentSharer,
+		private readonly FilesMetadataCache $metadataCache,
 	) {
 		$this->proxyCacheMessages = $cacheFactory->isAvailable() ? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PCM) : null;
 	}
@@ -109,6 +116,114 @@ class ChatController {
 			Http::STATUS_CREATED,
 			$headers,
 		);
+	}
+
+	/**
+	 * @see \OCA\Talk\Controller\ChatController::postAttachmentToRoom()
+	 *
+	 * The file stays on this server, in the participant's conversation folder: the folder is shared with the
+	 * conversation's participants on other servers, then the host posts the message (design §6).
+	 * When the host then refuses the post, the file stays in the (shared) folder without a message; the user
+	 * sees the error and can send it again.
+	 *
+	 * @return DataResponse<Http::STATUS_BAD_REQUEST|Http::STATUS_FORBIDDEN|Http::STATUS_NOT_FOUND, array{error: string}, array{}>|null Null when the host posted the message
+	 * @throws CannotReachRemoteException
+	 *
+	 * 400: The host did not list the participants, or refused the file
+	 * 403: Not allowed on the host
+	 * 404: Conversation (or federated attachments) not found on the host
+	 */
+	public function postAttachment(Room $room, Participant $participant, Folder $senderFolder, Node $file, string $talkMetaData, string $referenceId): ?DataResponse {
+		$participantCloudIds = $this->getParticipantCloudIds($room, $participant);
+		if ($participantCloudIds === null) {
+			return new DataResponse(['error' => 'participants'], Http::STATUS_BAD_REQUEST);
+		}
+
+		$attendee = $participant->getAttendee();
+		$shares = $this->attachmentSharer->shareSenderFolder($room, $attendee->getActorId(), $senderFolder, $participantCloudIds);
+
+		$proxy = $this->proxy->post(
+			$attendee->getInvitedCloudId(),
+			$attendee->getAccessToken(),
+			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v1/chat/' . $room->getRemoteToken() . '/federated-attachment',
+			[
+				'folderId' => (string)$senderFolder->getId(),
+				'file' => $this->getFileData($senderFolder, $file),
+				'shares' => $shares,
+				'talkMetaData' => $talkMetaData,
+				'referenceId' => $referenceId,
+				'actorDisplayName' => $attendee->getDisplayName(),
+			],
+		);
+
+		$statusCode = $proxy->getStatusCode();
+		if ($statusCode === Http::STATUS_CREATED) {
+			return null;
+		}
+		if (!in_array($statusCode, [Http::STATUS_BAD_REQUEST, Http::STATUS_FORBIDDEN, Http::STATUS_NOT_FOUND], true)) {
+			$statusCode = $this->proxy->logUnexpectedStatusCode(__METHOD__, $statusCode);
+		}
+		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_CREATED]);
+		return new DataResponse(['error' => is_string($data['error'] ?? null) ? $data['error'] : 'remote'], $statusCode);
+	}
+
+	/**
+	 * @see RoomController::getParticipants() — asked directly, because an error answer must not read as an empty list
+	 *
+	 * @return list<string>|null Cloud ids of the conversation's participants on other servers, users of the host
+	 *                           included; null when the host did not answer with the list (ruling R12)
+	 * @throws CannotReachRemoteException
+	 */
+	private function getParticipantCloudIds(Room $room, Participant $participant): ?array {
+		$proxy = $this->proxy->get(
+			$participant->getAttendee()->getInvitedCloudId(),
+			$participant->getAttendee()->getAccessToken(),
+			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v4/room/' . $room->getRemoteToken() . '/participants',
+		);
+		if ($proxy->getStatusCode() !== Http::STATUS_OK) {
+			$this->proxy->logUnexpectedStatusCode(__METHOD__, $proxy->getStatusCode());
+			return null;
+		}
+
+		$cloudIds = [];
+		$participants = $this->userConverter->convertAttendees($room, $this->proxy->getOCSData($proxy), 'actorType', 'actorId', 'displayName');
+		foreach ($participants as $entry) {
+			// After the conversion, users of this server are "users" and everyone else "federated_users"
+			if (is_array($entry) && ($entry['actorType'] ?? null) === Attendee::ACTOR_FEDERATED_USERS && is_string($entry['actorId'] ?? null)) {
+				$cloudIds[] = $entry['actorId'];
+			}
+		}
+		return $cloudIds;
+	}
+
+	/**
+	 * @return array{path: string, name: string, size: int, mimetype: string, etag: string, fileId: string, width?: int, height?: int, blurhash?: string}
+	 */
+	private function getFileData(Folder $senderFolder, Node $file): array {
+		$data = [
+			'path' => ltrim((string)$senderFolder->getRelativePath($file->getPath()), '/'),
+			'name' => $file->getName(),
+			'size' => (int)$file->getSize(),
+			'mimetype' => $file->getMimeType(),
+			'etag' => $file->getEtag(),
+			'fileId' => (string)$file->getId(),
+		];
+
+		if (str_starts_with($file->getMimeType(), 'image/')) {
+			try {
+				$metadata = $this->metadataCache->getImageMetadataForFileId($file->getId());
+			} catch (FilesMetadataNotFoundException) {
+				$metadata = [];
+			}
+			if (isset($metadata['width'], $metadata['height'])) {
+				$data['width'] = (int)$metadata['width'];
+				$data['height'] = (int)$metadata['height'];
+			}
+			if (isset($metadata['blurhash'])) {
+				$data['blurhash'] = (string)$metadata['blurhash'];
+			}
+		}
+		return $data;
 	}
 
 	/**

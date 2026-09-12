@@ -69,3 +69,15 @@ Feature: federation/attachments
     When user "participant1" removes remote "participant2" from room "room" with 200 (v4)
     And using server "REMOTE"
     Then user "participant2" has 0 accepted federated shares
+
+  Scenario: File from the remote participant is shown from each viewer's own server
+    Given using server "REMOTE"
+    When user "participant2" uploads file "bill.txt" with content "from bill" to conversation folder for room "LOCAL::room" with name "room"
+    And user "participant2" posts file "bill.txt" from conversation folder of room "LOCAL::room" with name "room" with 200 (v1)
+    # The sender's server finds the file in the sender's own storage
+    Then user "participant2" sees the last file message in room "LOCAL::room" as local file "bill.txt"
+    And using server "LOCAL"
+    # The test servers don't trust each other, so the federated share waits for acceptance
+    And user "participant1" sees the last file message in room "room" as not available
+    When user "participant1" accepts all pending federated shares
+    Then user "participant1" sees the last file message in room "room" as local file "bill.txt"
