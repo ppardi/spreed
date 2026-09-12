@@ -44,6 +44,7 @@ class ResourceTypeRegisterListener implements IEventListener {
 			[
 				'talk-v1' => '/ocs/v2.php/apps/spreed/api/',
 				FeatureSupport::OCM_PROTOCOL => '/ocs/v2.php/apps/spreed/api/',
+				FeatureSupport::OCM_PROTOCOL_V2 => '/ocs/v2.php/apps/spreed/api/',
 			]
 		);
 	}

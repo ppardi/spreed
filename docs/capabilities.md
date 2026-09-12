@@ -235,3 +235,4 @@
 
 ## Unreleased (private build, heading to be set when ported upstream)
 * `federated-attachments` - Whether files can be shared in federated conversations. Clients should only offer attachments in a federated conversation when both the local server and the host server list the feature.
+* `federated-attachments-upload` - Whether federated participants can upload files into conversations of this server, and files of other participants' servers are shown. Clients should only offer uploads in a federated conversation when both the local server and the host server list the feature.

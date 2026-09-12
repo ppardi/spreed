@@ -16,6 +16,7 @@ use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Chat\ReactionManager;
 use OCA\Talk\Config;
 use OCA\Talk\Controller\ChatController;
+use OCA\Talk\Federation\Attachments\RemoteShareRegistry;
 use OCA\Talk\GuestManager;
 use OCA\Talk\Manager;
 use OCA\Talk\MatterbridgeManager;
@@ -96,6 +97,7 @@ class ChatControllerTest extends TestCase {
 	private LoggerInterface&MockObject $logger;
 	private ConversationFolderService&MockObject $conversationFolderService;
 	private Config&MockObject $talkConfig;
+	private RemoteShareRegistry&MockObject $remoteShareRegistry;
 
 	protected Room&MockObject $room;
 
@@ -144,6 +146,7 @@ class ChatControllerTest extends TestCase {
 		$this->scheduledMessageService = $this->createMock(ScheduledMessageService::class);
 		$this->conversationFolderService = $this->createMock(ConversationFolderService::class);
 		$this->talkConfig = $this->createMock(Config::class);
+		$this->remoteShareRegistry = $this->createMock(RemoteShareRegistry::class);
 
 		$this->room = $this->createMock(Room::class);
 
@@ -199,6 +202,7 @@ class ChatControllerTest extends TestCase {
 			$this->scheduledMessageService,
 			$this->conversationFolderService,
 			$this->talkConfig,
+			$this->remoteShareRegistry,
 		);
 	}
 
@@ -1168,5 +1172,80 @@ class ChatControllerTest extends TestCase {
 		$expected = new DataResponse($expected, Http::STATUS_OK);
 
 		$this->assertEquals($expected, $response);
+	}
+
+	private const FEDERATED_FILE = ['path' => 'photo.png', 'name' => 'photo.png', 'size' => 7855, 'mimetype' => 'image/png', 'etag' => 'e1', 'fileId' => '88'];
+
+	private function asFederatedParticipant(bool $optedIn = true, int $roomType = Room::TYPE_GROUP): Participant&MockObject {
+		$this->federationAuthenticator->method('isFederationRequest')->willReturn(true);
+		$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn($optedIn);
+		$this->federationAuthenticator->method('getActorType')->willReturn(Attendee::ACTOR_FEDERATED_USERS);
+		$this->federationAuthenticator->method('getActorId')->willReturn('bill@nc2.test');
+		$this->room->method('getType')->willReturn($roomType);
+		$participant = $this->createMock(Participant::class);
+		$this->controller->setRoom($this->room);
+		$this->controller->setParticipant($participant);
+		return $participant;
+	}
+
+	public function testPostFederatedAttachment(): void {
+		$participant = $this->asFederatedParticipant();
+		$this->timeFactory->method('getDateTime')->willReturn(new \DateTime());
+		$shares = [['recipient' => 'paul@nc1.test', 'shareId' => '21']];
+		$this->remoteShareRegistry->expects($this->once())->method('record')->with($this->room, 'bill@nc2.test', '42', $shares);
+		$this->chatManager->expects($this->once())
+			->method('addSystemMessage')
+			->with(
+				$this->room,
+				$participant,
+				Attendee::ACTOR_FEDERATED_USERS,
+				'bill@nc2.test',
+				json_encode(['message' => 'file_shared', 'parameters' => [
+					// The owner is the authenticated sender: an "owner" in the request body is ignored
+					'federatedFile' => ['owner' => 'bill@nc2.test', 'folderId' => '42', 'path' => 'photo.png', 'name' => 'photo.png', 'size' => 7855, 'mimetype' => 'image/png', 'etag' => 'e1', 'fileId' => '88'],
+					'metaData' => ['caption' => 'Look', 'mimeType' => 'image/png'],
+				]]),
+				$this->anything(),
+				true,
+				'ref1',
+				null,
+				false,
+				false,
+				0,
+			)
+			->willReturn($this->createMock(IComment::class));
+
+		$response = $this->controller->postFederatedAttachment('42', ['owner' => 'mallory@evil.test'] + self::FEDERATED_FILE, $shares, '{"caption":"Look"}', 'ref1');
+		$this->assertSame(Http::STATUS_CREATED, $response->getStatus());
+		$this->assertNull($response->getData());
+	}
+
+	public static function dataPostFederatedAttachmentRejected(): array {
+		return [
+			'not a federation request' => [false, true, Room::TYPE_GROUP, self::FEDERATED_FILE, 'federation'],
+			'without the opt-in header' => [true, false, Room::TYPE_GROUP, self::FEDERATED_FILE, 'federation'],
+			'public conversation' => [true, true, Room::TYPE_PUBLIC, self::FEDERATED_FILE, 'federation'],
+			'path leaves the folder' => [true, true, Room::TYPE_GROUP, ['path' => '../secret.txt'] + self::FEDERATED_FILE, 'file'],
+		];
+	}
+
+	#[DataProvider('dataPostFederatedAttachmentRejected')]
+	public function testPostFederatedAttachmentRejected(bool $federationRequest, bool $optedIn, int $roomType, array $file, string $error): void {
+		if ($federationRequest) {
+			$this->asFederatedParticipant($optedIn, $roomType);
+		} else {
+			// A local user of this server, even one who sends the opt-in header
+			$this->federationAuthenticator->method('isFederationRequest')->willReturn(false);
+			$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn(true);
+			$this->room->method('getType')->willReturn($roomType);
+			$this->controller->setRoom($this->room);
+			$this->controller->setParticipant($this->createMock(Participant::class));
+		}
+		$this->remoteShareRegistry->expects($this->never())->method('record');
+		$this->chatManager->expects($this->never())->method('addSystemMessage');
+
+		$response = $this->controller->postFederatedAttachment('42', $file);
+		$this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
+		$this->assertSame(['error' => $error], $response->getData());
 	}
 }
