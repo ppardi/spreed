@@ -135,6 +135,57 @@ class LocalFileResolverTest extends TestCase {
 		$this->assertSame($file, $this->resolver->resolve('bill', 'https://nc1.test/', '6', 'photo1.jpg', 'Talk/Room-both-64z86muv'));
 	}
 
+	private function resolverWithShareFolder(string $shareFolder): LocalFileResolver {
+		$config = $this->createMock(IConfig::class);
+		$config->method('getSystemValueBool')->with('sharing.allow_custom_share_folder', true)->willReturn(true);
+		$config->method('getSystemValueString')->with('share_folder', '/')->willReturn('/');
+		$config->method('getUserValue')->with('bill', 'files_sharing', 'share_folder', '/')->willReturn($shareFolder);
+		return new LocalFileResolver($this->lookup, $this->rootFolder, $config, $this->setupManager, $this->userManager, $this->logger);
+	}
+
+	/**
+	 * @return File The file inside the moved share
+	 */
+	private function expectMountMovedIntoConversationFolder(string $mountPoint): File {
+		$mountRoot = $this->createMock(Folder::class);
+		$mountRoot->method('getName')->willReturn('Bill-bill');
+		$mountRoot->expects($this->once())
+			->method('move')
+			->with('/bill/files/Talk/Room-both-64z86muv/Bill-bill');
+		$talk = $this->createMock(Folder::class);
+		$target = $this->createMock(Folder::class);
+		$target->method('getPath')->willReturn('/bill/files/Talk/Room-both-64z86muv');
+		$target->method('getNonExistingName')->with('Bill-bill')->willReturn('Bill-bill');
+		$file = $this->createMock(File::class);
+
+		$this->userFolder->method('get')->willReturnCallback(fn (string $path) => match ($path) {
+			$mountPoint => $mountRoot,
+			'Talk' => $talk,
+			'Talk/Room-both-64z86muv/Bill-bill/photo1.jpg' => $file,
+			default => throw new NotFoundException($path),
+		});
+		$talk->method('get')->with('Room-both-64z86muv')->willReturn($target);
+		return $file;
+	}
+
+	public function testMovesMountFromTopLevelWhenAShareFolderIsConfigured(): void {
+		// Nextcloud mounts accepted federated shares at the top level even with a share folder configured
+		// (automatic accepts always do, manual accepts because of a files_sharing bug)
+		$this->lookup->method('findAccepted')->willReturn('/Bill-bill');
+		$file = $this->expectMountMovedIntoConversationFolder('Bill-bill');
+
+		$resolver = $this->resolverWithShareFolder('/Shared');
+		$this->assertSame($file, $resolver->resolve('bill', 'https://nc2.test/', '21', 'photo1.jpg', 'Talk/Room-both-64z86muv'));
+	}
+
+	public function testMovesMountFromTheConfiguredShareFolder(): void {
+		$this->lookup->method('findAccepted')->willReturn('/Shared/Bill-bill');
+		$file = $this->expectMountMovedIntoConversationFolder('Shared/Bill-bill');
+
+		$resolver = $this->resolverWithShareFolder('/Shared');
+		$this->assertSame($file, $resolver->resolve('bill', 'https://nc2.test/', '21', 'photo1.jpg', 'Talk/Room-both-64z86muv'));
+	}
+
 	public function testShareTheUserMovedElsewhereIsLeftAlone(): void {
 		$file = $this->createMock(File::class);
 		$this->lookup->method('findAccepted')->willReturn('/Projects/Room-both-wqhg8fxn');

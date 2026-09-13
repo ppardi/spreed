@@ -123,7 +123,10 @@ class LocalFileResolver {
 	 */
 	private function moveIntoFolder(Folder $userFolder, string $userId, string $mountPoint, string $targetFolder): string {
 		$currentFolder = trim(dirname('/' . $mountPoint), '/');
-		if ($targetFolder === '' || $currentFolder === $targetFolder || $currentFolder !== $this->getShareFolder($userId)) {
+		// Nextcloud mounts accepted federated shares at the top level of the user's files even when a share folder is
+		// configured (automatic accepts always do, manual accepts because of a files_sharing bug), so both places count
+		if ($targetFolder === '' || $currentFolder === $targetFolder
+			|| ($currentFolder !== '' && $currentFolder !== $this->getShareFolder($userId))) {
 			return $mountPoint;
 		}
 
@@ -140,7 +143,7 @@ class LocalFileResolver {
 	}
 
 	/**
-	 * Folder where Nextcloud places accepted federated shares (same rules as files_sharing's Helper::getShareFolder())
+	 * Configured folder for accepted shares (same rules as files_sharing's Helper::getShareFolder())
 	 */
 	private function getShareFolder(string $userId): string {
 		$shareFolder = $this->config->getSystemValueString('share_folder', '/');
