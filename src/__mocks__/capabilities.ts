@@ -106,6 +106,7 @@ export const mockedCapabilities: Capabilities = {
 			'federated-shared-items',
 			'federated-attachments',
 			'federated-attachments-upload',
+			'federated-message-search',
 			'scheduled-messages',
 			'conversation-presets',
 			'private-reply',

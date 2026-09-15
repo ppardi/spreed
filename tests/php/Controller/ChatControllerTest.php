@@ -1258,6 +1258,72 @@ class ChatControllerTest extends TestCase {
 		$this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
 		$this->assertSame(['error' => $error], $response->getData());
 	}
+
+	public function testSearchMessagesForFederatedParticipant(): void {
+		$this->asFederatedParticipant();
+		$this->room->method('getId')->willReturn(7);
+		$newer = $this->newComment(12, Attendee::ACTOR_USERS, 'paul', new \DateTime('@1700000100'), 'Message 2');
+		$older = $this->newComment(11, Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test', new \DateTime('@1700000000'), 'Message 1');
+		$this->chatManager->expects($this->once())
+			->method('searchForObjectsWithFilters')
+			->with(
+				'essa',
+				['7'],
+				[ChatManager::VERB_MESSAGE, ChatManager::VERB_OBJECT_SHARED],
+				new \DateTimeImmutable('@1700000000'),
+				null,
+				Attendee::ACTOR_FEDERATED_USERS,
+				'bill@nc2.test',
+				10,
+				20,
+			)
+			->willReturn([$newer, $older]);
+		$this->chatManager->method('filterCommentsWithNonExistingFiles')->willReturnArgument(0);
+		$this->threadService->method('findByThreadIds')->willReturn([]);
+		$this->timeFactory->method('getDateTime')->willReturn(new \DateTime());
+		$this->messageParser->method('createMessage')->willReturnCallback(function (Room $room, Participant $participant, IComment $comment): Message {
+			$message = $this->createMock(Message::class);
+			$message->method('getComment')->willReturn($comment);
+			$message->method('getVisibility')->willReturn(true);
+			$message->method('toArray')->willReturn(['id' => (int)$comment->getId(), 'message' => $comment->getMessage()]);
+			return $message;
+		});
+
+		$response = $this->controller->searchMessages('essa', 1700000000, 0, Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test', 10, 20);
+
+		$this->assertSame(Http::STATUS_OK, $response->getStatus());
+		// Newest first, as the search returned them
+		$this->assertSame([['id' => 12, 'message' => 'Message 2'], ['id' => 11, 'message' => 'Message 1']], $response->getData());
+	}
+
+	public function testSearchMessagesClampsPagingAndIgnoresAHalfActorFilter(): void {
+		$this->asFederatedParticipant();
+		$this->room->method('getId')->willReturn(7);
+		$this->chatManager->expects($this->once())
+			->method('searchForObjectsWithFilters')
+			->with('', ['7'], [ChatManager::VERB_MESSAGE, ChatManager::VERB_OBJECT_SHARED], null, null, null, null, 0, 100)
+			->willReturn([]);
+		$this->chatManager->method('filterCommentsWithNonExistingFiles')->willReturnArgument(0);
+		$this->threadService->method('findByThreadIds')->willReturn([]);
+
+		$response = $this->controller->searchMessages('', 0, 0, Attendee::ACTOR_FEDERATED_USERS, '', -5, 500);
+
+		$this->assertSame(Http::STATUS_OK, $response->getStatus());
+		$this->assertSame([], $response->getData());
+	}
+
+	public function testSearchMessagesOnlyAnswersFederationRequests(): void {
+		$this->federationAuthenticator->method('isFederationRequest')->willReturn(false);
+		$this->controller->setRoom($this->room);
+		$this->controller->setParticipant($this->createMock(Participant::class));
+		$this->chatManager->expects($this->never())->method('searchForObjectsWithFilters');
+
+		$response = $this->controller->searchMessages('essa');
+
+		$this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
+		$this->assertSame(['error' => 'federation'], $response->getData());
+	}
+
 	/**
 	 * Bill posts "Talk/Room-abc/Bill-bill/Draft/upload-1.jpg" in a federated conversation: the file is moved into
 	 * his sender folder as "photo.jpg" before his server asks the host to post the message

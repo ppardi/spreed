@@ -2268,7 +2268,16 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 * @return array<string, TalkChatMessage>
 	 */
 	protected function getMessagesForRoom(array $messageIds): array {
-		$comments = $this->chatManager->getMessagesForRoomById($this->room, $messageIds);
+		return $this->formatComments($this->chatManager->getMessagesForRoomById($this->room, $messageIds));
+	}
+
+	/**
+	 * The visible messages of the given comments for the current participant, keyed by message id, in the order of the comments
+	 *
+	 * @param IComment[] $comments
+	 * @return array<string, TalkChatMessage>
+	 */
+	protected function formatComments(array $comments): array {
 		$this->sharePreloader->preloadShares($comments);
 		$potentialThreadIds = array_map(static fn (IComment $comment) => (int)$comment->getTopmostParentId() ?: (int)$comment->getId(), $comments);
 		$threads = $this->threadService->findByThreadIds($this->room->getId(), $potentialThreadIds);
@@ -2760,5 +2769,59 @@ class ChatController extends AEnvironmentAwareOCSController {
 		$this->postFileMessage(['federatedFile' => $remoteFile], $remoteFile['mimetype'], $talkMetaData, $referenceId, $actorType, $actorId);
 
 		return new DataResponse(null, Http::STATUS_CREATED);
+	}
+
+	/**
+	 * Search the messages of a conversation for a federated participant
+	 *
+	 * Federation only: the participant's server forwards searches in the conversation to this server, which hosts it.
+	 * Users of this server search with the unified search instead.
+	 *
+	 * Required capability: `federated-message-search`
+	 *
+	 * @param string $term Text to search for
+	 * @param int $since Only messages posted since this Unix timestamp (0 for no limit)
+	 * @psalm-param non-negative-int $since
+	 * @param int $until Only messages posted until this Unix timestamp (0 for no limit)
+	 * @psalm-param non-negative-int $until
+	 * @param string $actorType Only messages of this actor type (together with `actorId`)
+	 * @param string $actorId Only messages of this actor (together with `actorType`)
+	 * @param int $offset Number of matching messages to skip
+	 * @psalm-param non-negative-int $offset
+	 * @param int<1, 100> $limit Maximum number of messages
+	 * @return DataResponse<Http::STATUS_OK, list<TalkChatMessage>, array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: 'federation'}, array{}>
+	 *
+	 * 200: Matching messages, newest first
+	 * 400: Not a federation request
+	 */
+	#[FederationSupported]
+	#[OpenAPI(scope: OpenAPI::SCOPE_FEDERATION)]
+	#[PublicPage]
+	#[RequireModeratorOrNoLobby]
+	#[RequireParticipant]
+	#[RequestHeader(name: 'x-nextcloud-federation', description: 'Set to 1 when the request is performed by another Nextcloud Server to indicate a federation request', indirect: true)]
+	#[ApiRoute(verb: 'GET', url: '/api/{apiVersion}/chat/{token}/search', requirements: [
+		'apiVersion' => '(v1)',
+		'token' => '[a-z0-9]{4,30}',
+	])]
+	public function searchMessages(string $term = '', int $since = 0, int $until = 0, string $actorType = '', string $actorId = '', int $offset = 0, int $limit = 25): DataResponse {
+		if (!$this->federationAuthenticator->isFederationRequest()) {
+			return new DataResponse(['error' => 'federation'], Http::STATUS_BAD_REQUEST);
+		}
+
+		$filterByActor = $actorType !== '' && $actorId !== '';
+		$comments = $this->chatManager->searchForObjectsWithFilters(
+			$term,
+			[(string)$this->room->getId()],
+			[ChatManager::VERB_MESSAGE, ChatManager::VERB_OBJECT_SHARED],
+			$since > 0 ? new \DateTimeImmutable('@' . $since) : null,
+			$until > 0 ? new \DateTimeImmutable('@' . $until) : null,
+			$filterByActor ? $actorType : null,
+			$filterByActor ? $actorId : null,
+			max(0, $offset),
+			min(100, max(1, $limit)),
+		);
+
+		return new DataResponse(array_values($this->formatComments($comments)), Http::STATUS_OK);
 	}
 }

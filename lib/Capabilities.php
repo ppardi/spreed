@@ -137,6 +137,7 @@ class Capabilities implements IPublicCapability {
 		'bot-features-api',
 		'federated-attachments',
 		'federated-attachments-upload',
+		'federated-message-search',
 	];
 
 	public const CONDITIONAL_FEATURES = [
