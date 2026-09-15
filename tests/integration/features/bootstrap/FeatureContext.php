@@ -2964,6 +2964,13 @@ class FeatureContext implements Context, SnippetAcceptingContext {
 			}
 		}
 
+		if (str_contains($search, 'person:USER(')) {
+			if (preg_match('/person:USER\((?P<name>\w+)\)/', $search, $matches)) {
+				$search = trim(preg_replace('/person:USER\((\w+)\)/', '', $search));
+				$searchUrl .= '&person=' . $matches['name'];
+			}
+		}
+
 		$searchUrl .= '&term=' . $search;
 
 		$this->setCurrentUser($user);
