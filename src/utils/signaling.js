@@ -641,6 +641,8 @@ function Standalone(settings, urls) {
 	this.ownSessionJoined = false
 	this.joinedUsers = {}
 	this.rooms = []
+	// Whether the link of the joined federated conversation to the signaling server of its host is interrupted
+	this.federationLinkInterrupted = false
 	this.connect()
 	Signaling.Base.prototype._trigger.call(this, 'settingsUpdated', [settings])
 }
@@ -876,6 +878,7 @@ Signaling.Standalone.prototype.sendBye = function() {
 }
 
 Signaling.Standalone.prototype.disconnect = function() {
+	this.federationLinkInterrupted = false
 	this.sendBye()
 	if (this.socket) {
 		this.socket.close()
@@ -1334,7 +1337,9 @@ Signaling.Standalone.prototype.joinResponseReceived = function(data, token) {
 		this.roomCollection.sort()
 	}
 
-	this._trigger('supportedFeatures', Object.keys(this.features))
+	// Joined (again): the link of a federated conversation to the signaling server of its host works
+	this.federationLinkInterrupted = false
+	this._trigger('supportedFeatures', this._getSupportedFeatures())
 }
 
 Signaling.Standalone.prototype._doLeaveRoom = function(token) {
@@ -1453,6 +1458,14 @@ Signaling.Standalone.prototype.processRoomEvent = function(data) {
 			break
 		case 'message':
 			this.processRoomMessageEvent(data.event.message.roomid, data.event.message.data)
+			break
+		case 'federation_interrupted':
+			console.info('The link to the signaling server of the conversation host was interrupted', this.currentRoomToken)
+			this._setFederationLinkInterrupted(true)
+			break
+		case 'federation_resumed':
+			console.info('The link to the signaling server of the conversation host was restored', this.currentRoomToken)
+			this._setFederationLinkInterrupted(false)
 			break
 		default:
 			console.error('Unknown room event', data)
@@ -1616,6 +1629,29 @@ Signaling.Standalone.prototype.processErrorTokenExpired = function() {
 	}
 
 	this._trigger('updateSettings')
+}
+
+/**
+ * The features of the signaling server as announced to the chat: "chat-relay" is withheld while the link of the joined
+ * federated conversation to the signaling server of its host is interrupted, so that the chat polls for new messages
+ *
+ * @return {string[]}
+ */
+Signaling.Standalone.prototype._getSupportedFeatures = function() {
+	const features = Object.keys(this.features)
+	return this.federationLinkInterrupted ? features.filter((feature) => feature !== 'chat-relay') : features
+}
+
+/**
+ * @param {boolean} interrupted Whether the link of the joined federated conversation to the signaling server of its host is interrupted
+ */
+Signaling.Standalone.prototype._setFederationLinkInterrupted = function(interrupted) {
+	if (this.federationLinkInterrupted === interrupted) {
+		return
+	}
+
+	this.federationLinkInterrupted = interrupted
+	this._trigger('supportedFeatures', this._getSupportedFeatures())
 }
 
 Signaling.Standalone.prototype.requestOffer = function(sessionid, roomType, sid = undefined) {
