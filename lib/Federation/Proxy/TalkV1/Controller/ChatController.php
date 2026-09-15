@@ -742,4 +742,41 @@ class ChatController {
 		// FIXME post-load status information
 		return new DataResponse($data, Http::STATUS_OK);
 	}
+
+	/**
+	 * Search the messages of the conversation on its host, for the unified search of this server
+	 *
+	 * @return list<TalkChatMessage> Matching messages, newest first, with actors as this server knows them. Empty when the
+	 *                               host doesn't answer searches (official Talk or older builds answer 404)
+	 * @throws CannotReachRemoteException
+	 *
+	 * @see \OCA\Talk\Controller\ChatController::searchMessages()
+	 */
+	public function searchMessages(Room $room, Participant $participant, string $term, int $since, int $until, string $actorType, string $actorId, int $offset, int $limit): array {
+		$proxy = $this->proxy->get(
+			$participant->getAttendee()->getInvitedCloudId(),
+			$participant->getAttendee()->getAccessToken(),
+			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v1/chat/' . $room->getRemoteToken() . '/search',
+			[
+				'term' => $term,
+				'since' => $since,
+				'until' => $until,
+				'actorType' => $actorType,
+				'actorId' => $actorId,
+				'offset' => $offset,
+				'limit' => $limit,
+			],
+		);
+
+		if ($proxy->getStatusCode() !== Http::STATUS_OK) {
+			return [];
+		}
+
+		/** @var list<TalkChatMessage> $data */
+		$data = $this->proxy->getOCSData($proxy);
+		// Only the text is shown, so the file parameters don't need resolving to files of this server
+		/** @var list<TalkChatMessage> $data */
+		$data = $this->userConverter->convertMessages($room, $data);
+		return array_values($data);
+	}
 }

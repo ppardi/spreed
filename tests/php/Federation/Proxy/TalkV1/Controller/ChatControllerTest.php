@@ -185,4 +185,38 @@ class ChatControllerTest extends TestCase {
 		$this->assertSame(Http::STATUS_BAD_REQUEST, $response->getStatus());
 		$this->assertSame(['error' => 'remote'], $response->getData());
 	}
+
+	public function testSearchIsForwardedToTheHost(): void {
+		$hostResponse = $this->hostResponse(Http::STATUS_OK);
+		$this->proxy->expects($this->once())
+			->method('get')
+			->with('bill@nc2.test', 'secret', 'https://nc1.test/ocs/v2.php/apps/spreed/api/v1/chat/abcdef/search', [
+				'term' => 'essa',
+				'since' => 1700000000,
+				'until' => 0,
+				'actorType' => Attendee::ACTOR_FEDERATED_USERS,
+				'actorId' => 'bill@nc2.test',
+				'offset' => 10,
+				'limit' => 20,
+			])
+			->willReturn($hostResponse);
+		$hostMessages = [['id' => 12, 'actorType' => Attendee::ACTOR_FEDERATED_USERS, 'actorId' => 'bill@nc2.test', 'message' => 'Message 2']];
+		$converted = [['id' => 12, 'actorType' => Attendee::ACTOR_USERS, 'actorId' => 'bill', 'message' => 'Message 2']];
+		$this->proxy->method('getOCSData')->with($hostResponse)->willReturn($hostMessages);
+		$this->userConverter->expects($this->once())
+			->method('convertMessages')
+			->with($this->room, $hostMessages)
+			->willReturn($converted);
+
+		$this->assertSame($converted, $this->controller->searchMessages($this->room, $this->participant, 'essa', 1700000000, 0, Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test', 10, 20));
+	}
+
+	public function testSearchFindsNothingWhenTheHostDoesNotAnswerIt(): void {
+		// Official Talk and older builds don't have the endpoint (404); a participant held in the lobby gets 403
+		$this->proxy->method('get')->willReturn($this->hostResponse(Http::STATUS_NOT_FOUND));
+		$this->proxy->expects($this->never())->method('getOCSData');
+		$this->userConverter->expects($this->never())->method('convertMessages');
+
+		$this->assertSame([], $this->controller->searchMessages($this->room, $this->participant, 'essa', 0, 0, '', '', 0, 20));
+	}
 }
