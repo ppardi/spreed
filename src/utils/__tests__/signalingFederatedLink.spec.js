@@ -424,11 +424,13 @@ describe('signaling: link of a federated conversation to the signaling server of
 			createJoinedSignaling()
 			await rejectedJoinWithPendingRetry()
 			const rejoin = vi.spyOn(signaling, '_joinRoomSuccess')
+			const fetches = fetchSignalingSettings.mock.calls.length
 
 			leave()
 			await vi.advanceTimersByTimeAsync(60_000)
 
 			expect(rejoin).not.toHaveBeenCalled()
+			expect(fetchSignalingSettings).toHaveBeenCalledTimes(fetches)
 		}
 	})
 
@@ -516,6 +518,40 @@ describe('signaling: link of a federated conversation to the signaling server of
 		await vi.advanceTimersByTimeAsync(0)
 		const [, , rejoin] = sentRoomMessages()
 		expect(rejoin.room.federation.token).toBe('fresh-federation-token')
+	})
+
+	test('opening another conversation forgets the interruption of the previous one', async () => {
+		createJoinedSignaling()
+		receive({ type: 'event', event: { target: 'room', type: 'federation_interrupted' } })
+
+		signaling.setSettings({ ...settings, token: 'othertoken', federation: { ...federation, roomId: 'otherremotetoken' } })
+		signaling.joinRoom('othertoken', 'nextcloud-session-2')
+		const [join] = sentJoins()
+		rejectJoin(join, 'token_expired')
+
+		// The rejected join of the other conversation announces the features without chat relay again, so its chat polls
+		expect(announcedFeatures).toEqual([['federation'], ['federation']])
+	})
+
+	test('an attempt that fails unexpectedly is retried after the backoff', async () => {
+		createJoinedSignaling()
+		let failOnce = true
+		signaling.on('settingsUpdated', () => {
+			if (failOnce) {
+				failOnce = false
+				throw new Error('listener failed')
+			}
+		})
+
+		receive({ type: 'event', event: { target: 'room', type: 'federation_interrupted' } })
+		receive({ type: 'error', error: { code: 'token_expired', message: 'The token is expired.' } })
+		await vi.advanceTimersByTimeAsync(0)
+		expect(sentRoomMessages()).toEqual([])
+
+		await vi.advanceTimersByTimeAsync(5_000)
+		const [leave, join] = sentRoomMessages()
+		expect(leave.room).toEqual({ roomid: '' })
+		expect(join.room.federation.token).toBe('fresh-federation-token')
 	})
 
 	test('the STUN and TURN servers of the settings in use are announced again for a call', () => {

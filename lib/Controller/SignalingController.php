@@ -57,6 +57,11 @@ class SignalingController extends OCSController {
 	/** Most TURN servers of the host of a federated conversation that are given to the clients */
 	private const MAX_HOST_TURN_SERVERS = 5;
 
+	/** Most URLs of one TURN server of the host that are given to the clients */
+	private const MAX_HOST_TURN_SERVER_URLS = 10;
+	/** Longest URL, user name or credential of a TURN server of the host that is accepted */
+	private const MAX_HOST_TURN_SERVER_VALUE_LENGTH = 512;
+
 	/** @var int */
 	private const PULL_MESSAGES_TIMEOUT = 30;
 
@@ -398,8 +403,9 @@ class SignalingController extends OCSController {
 	}
 
 	/**
-	 * The well-formed TURN servers from the settings of a host, at most MAX_HOST_TURN_SERVERS (the answer comes from
-	 * another server, and the clients try every server they get)
+	 * The well-formed TURN servers from the settings of a host, at most MAX_HOST_TURN_SERVERS with at most
+	 * MAX_HOST_TURN_SERVER_URLS URLs each, and their URLs checked to match the format the clients expect (the answer
+	 * comes from another server, and a malformed URL would make the browser reject the whole list of ICE servers)
 	 *
 	 * @return list<array{urls: list<string>, username: string, credential: string}>
 	 */
@@ -421,11 +427,17 @@ class SignalingController extends OCSController {
 			if (!is_array($turnUrls) || !is_string($username) || !is_string($credential)) {
 				continue;
 			}
+			if (strlen($username) > self::MAX_HOST_TURN_SERVER_VALUE_LENGTH || strlen($credential) > self::MAX_HOST_TURN_SERVER_VALUE_LENGTH) {
+				continue;
+			}
 
 			$urls = [];
 			foreach ($turnUrls as $url) {
-				if (is_string($url) && (str_starts_with($url, 'turn:') || str_starts_with($url, 'turns:'))) {
+				if (is_string($url) && strlen($url) <= self::MAX_HOST_TURN_SERVER_VALUE_LENGTH && preg_match('/^turns?:[^\s?]+(\?transport=(udp|tcp))?$/', $url) === 1) {
 					$urls[] = $url;
+					if (count($urls) === self::MAX_HOST_TURN_SERVER_URLS) {
+						break;
+					}
 				}
 			}
 			if ($urls === []) {

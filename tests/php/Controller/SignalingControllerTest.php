@@ -422,6 +422,9 @@ class SignalingControllerTest extends TestCase {
 				'not-a-turn-server',
 				['urls' => ['turn:turn2.host.example:3478'], 'username' => 42, 'credential' => 'c'],
 				['urls' => ['turn:turn3.host.example:3478', 42, 'stun:stun.host.example:3478'], 'username' => 'u3', 'credential' => 'c3'],
+				// Malformed URLs are dropped (the browser would reject the whole list)
+				['urls' => ['turn:', 'turn:bad host:3478', 'turn:turn4.host.example:3478?transport=sctp'], 'username' => 'u4', 'credential' => 'c4'],
+				['urls' => ['turn:turn5.host.example:3478'], 'username' => str_repeat('u', 513), 'credential' => 'c5'],
 			],
 		]));
 
@@ -469,6 +472,24 @@ class SignalingControllerTest extends TestCase {
 			['u1', 'u2', 'u3', 'u4', 'u5', 'ownUser'],
 			array_column($settings['turnservers'], 'username'),
 		);
+	}
+
+	public function testGetSettingsFederatedConversationUsesAtMostTenUrlsOfATurnServerOfTheHost(): void {
+		$turnUrls = [];
+		for ($i = 0; $i <= 11; $i++) {
+			$turnUrls[] = 'turn:turn.host.example:' . (3478 + $i);
+		}
+		$this->setUpFederatedConversation(new DataResponse([
+			'server' => 'https://host.example/standalone-signaling/',
+			'helloAuthParams' => ['2.0' => ['token' => 'host-federation-token']],
+			'turnservers' => [
+				['urls' => $turnUrls, 'username' => 'hostUser', 'credential' => 'hostPassword'],
+			],
+		]));
+
+		$settings = $this->controller->getSettings('localtoken')->getData();
+
+		$this->assertSame(array_slice($turnUrls, 0, 10), $settings['turnservers'][0]['urls']);
 	}
 
 	public function testGetSettingsFederatedConversationWithoutSettingsOfTheHost(): void {

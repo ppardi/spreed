@@ -1228,8 +1228,10 @@ Signaling.Standalone.prototype.joinRoom = function(token, sessionId) {
 	this.ownSessionJoined = false
 
 	if (token !== this.currentRoomToken) {
-		// Another conversation is opened: a pending rejoin of the previous one is obsolete
+		// Another conversation is opened: a pending rejoin of the previous one is obsolete, and the link state of the
+		// previous one does not apply (the answer to the join announces the features)
 		this._resetFederatedRejoin()
+		this.federationLinkInterrupted = false
 	}
 
 	if (!this.sessionId) {
@@ -1756,7 +1758,14 @@ Signaling.Standalone.prototype._scheduleFederatedRejoin = function() {
 	this._federatedRejoinAttempts++
 	this._federatedRejoinTimer = window.setTimeout(() => {
 		this._federatedRejoinTimer = null
-		this._rejoinFederatedRoom(token, generation)
+		this._rejoinFederatedRoom(token, generation).catch((error) => {
+			// E.g. a listener of the new settings failed: try again after the backoff
+			console.error('Joining the federated conversation again failed', token, error)
+			if (generation === this._federatedRejoinGeneration) {
+				this._federatedRejoinPending = false
+				this._scheduleFederatedRejoin()
+			}
+		})
 	}, delay)
 }
 
@@ -1769,7 +1778,8 @@ Signaling.Standalone.prototype._scheduleFederatedRejoin = function() {
  */
 Signaling.Standalone.prototype._rejoinFederatedRoom = async function(token, generation) {
 	// Outdated when the rejoin was reset, or another conversation is opened (its settings are loaded before it is joined,
-	// and joinRoom() resets the rejoin)
+	// and joinRoom() resets the rejoin). An outdated attempt leaves _federatedRejoinPending and federationLinkInterrupted
+	// as they are: a reset already cleared them, and otherwise the next joinRoom() of another conversation does.
 	const isOutdated = () => generation !== this._federatedRejoinGeneration
 		|| token !== this.currentRoomToken
 		|| this.settings.token !== token
