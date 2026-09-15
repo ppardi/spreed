@@ -772,11 +772,41 @@ class ChatController {
 			return [];
 		}
 
-		/** @var list<TalkChatMessage> $data */
-		$data = $this->proxy->getOCSData($proxy);
+		$data = $this->filterValidSearchResults($this->proxy->getOCSData($proxy));
 		// Only the text is shown, so the file parameters don't need resolving to files of this server
 		/** @var list<TalkChatMessage> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
 		return array_values($data);
+	}
+
+	/**
+	 * A malformed answer from the host must not break the search (spec: federated search never fails the whole
+	 * search), so entries that are not arrays, or that lack the keys `searchMessages()` relies on with the right
+	 * basic type, are dropped instead of causing a TypeError further down in `UserConverter::convertMessages()`.
+	 *
+	 * @return list<TalkChatMessage>
+	 */
+	private function filterValidSearchResults(mixed $data): array {
+		if (!is_array($data)) {
+			return [];
+		}
+
+		$messages = [];
+		foreach ($data as $entry) {
+			if (!is_array($entry)
+				|| !is_int($entry['id'] ?? null)
+				|| !is_string($entry['actorType'] ?? null)
+				|| !is_string($entry['actorId'] ?? null)
+				|| !is_string($entry['actorDisplayName'] ?? null)
+				|| !is_int($entry['timestamp'] ?? null)
+				|| !is_string($entry['message'] ?? null)
+				|| !is_array($entry['messageParameters'] ?? null)) {
+				continue;
+			}
+			/** @var TalkChatMessage $entry */
+			$messages[] = $entry;
+		}
+
+		return $messages;
 	}
 }

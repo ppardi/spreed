@@ -200,8 +200,8 @@ class ChatControllerTest extends TestCase {
 				'limit' => 20,
 			])
 			->willReturn($hostResponse);
-		$hostMessages = [['id' => 12, 'actorType' => Attendee::ACTOR_FEDERATED_USERS, 'actorId' => 'bill@nc2.test', 'message' => 'Message 2']];
-		$converted = [['id' => 12, 'actorType' => Attendee::ACTOR_USERS, 'actorId' => 'bill', 'message' => 'Message 2']];
+		$hostMessages = [['id' => 12, 'actorType' => Attendee::ACTOR_FEDERATED_USERS, 'actorId' => 'bill@nc2.test', 'actorDisplayName' => 'Bill', 'timestamp' => 1700000001, 'message' => 'Message 2', 'messageParameters' => []]];
+		$converted = [['id' => 12, 'actorType' => Attendee::ACTOR_USERS, 'actorId' => 'bill', 'actorDisplayName' => 'Bill', 'timestamp' => 1700000001, 'message' => 'Message 2', 'messageParameters' => []]];
 		$this->proxy->method('getOCSData')->with($hostResponse)->willReturn($hostMessages);
 		$this->userConverter->expects($this->once())
 			->method('convertMessages')
@@ -218,5 +218,41 @@ class ChatControllerTest extends TestCase {
 		$this->userConverter->expects($this->never())->method('convertMessages');
 
 		$this->assertSame([], $this->controller->searchMessages($this->room, $this->participant, 'essa', 0, 0, '', '', 0, 20));
+	}
+
+	public function testSearchIgnoresANonListAnswerFromTheHost(): void {
+		// e.g. an error body answered with a 200 status code
+		$hostResponse = $this->hostResponse(Http::STATUS_OK);
+		$this->proxy->method('get')->willReturn($hostResponse);
+		$this->proxy->method('getOCSData')->with($hostResponse)->willReturn(['error' => 'x']);
+		$this->userConverter->method('convertMessages')->willReturnArgument(1);
+
+		$this->assertSame([], $this->controller->searchMessages($this->room, $this->participant, 'essa', 0, 0, '', '', 0, 20));
+	}
+
+	public function testSearchDropsMalformedEntriesButKeepsValidOnes(): void {
+		$hostResponse = $this->hostResponse(Http::STATUS_OK);
+		$this->proxy->method('get')->willReturn($hostResponse);
+		$validMessage = ['id' => 12, 'actorType' => Attendee::ACTOR_FEDERATED_USERS, 'actorId' => 'bill@nc2.test', 'actorDisplayName' => 'Bill', 'timestamp' => 1700000001, 'message' => 'Message 2', 'messageParameters' => []];
+		$hostMessages = [
+			// Missing "timestamp" and "messageParameters"
+			['id' => 11, 'actorType' => Attendee::ACTOR_FEDERATED_USERS, 'actorId' => 'bill@nc2.test', 'actorDisplayName' => 'Bill', 'message' => 'Message 1'],
+			$validMessage,
+			'not even an array',
+		];
+		$this->proxy->method('getOCSData')->with($hostResponse)->willReturn($hostMessages);
+		$this->userConverter->expects($this->once())
+			->method('convertMessages')
+			->with($this->room, [$validMessage])
+			->willReturn([$validMessage]);
+
+		$this->assertSame([$validMessage], $this->controller->searchMessages($this->room, $this->participant, 'essa', 0, 0, '', '', 0, 20));
+	}
+
+	public function testFilterValidSearchResultsIgnoresANonArrayAnswer(): void {
+		// Guards the (currently unreachable through ProxyRequest::getOCSData(), which is typed "?array") case of
+		// "ocs.data" not being an array at all, so the helper stays safe if that ever changes.
+		$method = new \ReflectionMethod($this->controller, 'filterValidSearchResults');
+		$this->assertSame([], $method->invoke($this->controller, 'not-an-array'));
 	}
 }

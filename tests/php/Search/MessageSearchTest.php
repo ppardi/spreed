@@ -64,10 +64,14 @@ class MessageSearchTest extends TestCase {
 		// Bill and Carol are users of this server in the conversation hosted on nc1
 		$this->participant = $this->participant('bill', 'bill@nc2.test');
 		$carol = $this->participant('carol', 'carol@nc2.test');
+		// Erin is a participant, but was never invited with a cloud id (shouldn't normally happen for a federated
+		// conversation, but the "From" filter must stay defensive about it)
+		$erin = $this->participant('erin', '');
 		$this->participantService->method('getParticipant')->willReturnCallback(
 			fn (Room $room, string $userId): Participant => match ($userId) {
 				'bill' => $this->participant,
 				'carol' => $carol,
+				'erin' => $erin,
 				default => throw new ParticipantNotFoundException(),
 			}
 		);
@@ -257,6 +261,17 @@ class MessageSearchTest extends TestCase {
 		$this->assertSame([], self::serialize($result)['entries']);
 	}
 
+	public function testFromFilterWithAnEmptyCloudIdFindsNothing(): void {
+		$this->room(true);
+		$person = $this->createMock(IUser::class);
+		$person->method('getUID')->willReturn('erin');
+		$this->proxyChatController->expects($this->never())->method('searchMessages');
+
+		$result = $this->provider(CurrentMessageSearch::class)->search($this->user, $this->query(['person' => $person]));
+
+		$this->assertSame([], self::serialize($result)['entries']);
+	}
+
 	public function testUnreachableHostFindsNothing(): void {
 		$this->room(true);
 		$this->proxyChatController->method('searchMessages')->willThrowException(new CannotReachRemoteException());
@@ -278,6 +293,21 @@ class MessageSearchTest extends TestCase {
 		$result = $this->provider(MessageSearch::class)->search($this->user, $this->query(['conversation' => 'fedtok'], null, 'files.View.index'));
 
 		$this->assertSame('Messages', self::serialize($result)['name']);
+	}
+
+	public function testConversationFilterOnAFederatedConversationWhenNotAParticipantFindsNothing(): void {
+		// Not built with the room() helper: that ties getRoomForUserByToken() to "bill", which would conflict here
+		$room = $this->createMock(Room::class);
+		$room->method('isFederatedConversation')->willReturn(true);
+		$dave = $this->createMock(IUser::class);
+		$dave->method('getUID')->willReturn('dave');
+		$this->roomManager->method('getRoomForUserByToken')->with('fedtok', 'dave')->willReturn($room);
+		$this->proxyChatController->expects($this->never())->method('searchMessages');
+
+		// Nextcloud's search outside Talk, with the conversation chip set to a federated conversation Dave isn't part of
+		$result = $this->provider(MessageSearch::class)->search($dave, $this->query(['conversation' => 'fedtok'], null, 'files.View.index'));
+
+		$this->assertSame([], self::serialize($result)['entries']);
 	}
 
 	public function testConversationOfThisServerIsSearchedHere(): void {
