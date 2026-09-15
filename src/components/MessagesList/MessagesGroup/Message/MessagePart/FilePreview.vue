@@ -507,7 +507,7 @@ export default {
 			this.uploadManager = getUploader()
 		}
 
-		if (this.file.blurhash && this.file.width && this.file.height) {
+		if (this.$refs.blurCanvas && this.file.blurhash && this.file.width && this.file.height) {
 			const ctx = this.$refs.blurCanvas.getContext('2d')
 			const imageData = ctx.createImageData(32, 32)
 			imageData.data.set(decode(this.file.blurhash, 32, 32))

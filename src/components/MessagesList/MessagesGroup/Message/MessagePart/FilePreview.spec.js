@@ -196,6 +196,28 @@ describe('FilePreview.vue', () => {
 			expect(spinner.exists()).toBe(true)
 		})
 
+		test('does not draw the blurhash placeholder when the local image of an upload is shown', () => {
+			const errors = []
+			uploadStore.localUrls['ref-123'] = 'blob:XYZ'
+			props.referenceId = 'ref-123'
+			props.file.blurhash = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj'
+			props.file.width = '640'
+			props.file.height = '480'
+
+			const wrapper = mount(FilePreview, {
+				global: {
+					plugins: [router],
+					config: {
+						errorHandler: (error) => errors.push(error),
+					},
+				},
+				props,
+			})
+
+			expect(errors).toEqual([])
+			expect(wrapper.find('canvas').exists()).toBe(false)
+		})
+
 		test('renders default mime icon on load error', async () => {
 			OC.MimeType.getIconUrl.mockReturnValueOnce(imagePath('core', 'video/mpeg'))
 			props.file = {
