@@ -144,6 +144,26 @@ Signaling.Base.prototype.setSettings = function(settings) {
 	}
 }
 
+/**
+ * Applies signaling settings fetched again for the connection (after its token expired). They are fetched for the
+ * conversation the connection was created for; when that is not the conversation in use, only the credentials of the
+ * connection are taken and everything else (federation block, STUN and TURN servers, …) is kept. A stale federation
+ * token is replaced when joining that conversation fails (see joinResponseReceived()).
+ *
+ * @param {object|null} settings The fetched settings, null if they could not be fetched
+ */
+Signaling.Base.prototype.setRefreshedSettings = function(settings) {
+	if (settings && this.settings.token && settings.token !== this.settings.token) {
+		settings = {
+			...this.settings,
+			helloAuthParams: settings.helloAuthParams,
+			ticket: settings.ticket,
+		}
+	}
+
+	this.setSettings(settings)
+}
+
 Signaling.Base.prototype.getSessionId = function() {
 	return this.sessionId
 }

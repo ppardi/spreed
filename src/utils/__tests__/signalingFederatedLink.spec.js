@@ -463,4 +463,58 @@ describe('signaling: link of a federated conversation to the signaling server of
 
 		expect(signaling.currentRoomToken).toBeNull()
 	})
+
+	test('settings refreshed for the connection only take its credentials when they belong to another conversation', () => {
+		const turnservers = [{ urls: ['turn:host.test:3478?transport=udp'], username: 'host', credential: 'host' }]
+		createJoinedSignaling({ ...settings, turnservers })
+
+		signaling.setRefreshedSettings({
+			...settings,
+			token: 'firsttoken',
+			federation: null,
+			turnservers: [{ urls: ['turn:own.test:3478?transport=udp'], username: 'own', credential: 'own' }],
+			helloAuthParams: { '2.0': { token: 'fresh-own-token', url: settings.helloAuthParams['2.0'].url } },
+			ticket: 'fresh-ticket',
+		})
+
+		expect(signaling.settings.helloAuthParams['2.0'].token).toBe('fresh-own-token')
+		expect(signaling.settings.ticket).toBe('fresh-ticket')
+		expect(signaling.settings.token).toBe('localtoken')
+		expect(signaling.settings.federation).toEqual(federation)
+		expect(signaling.settings.turnservers).toEqual(turnservers)
+	})
+
+	test('settings refreshed for the conversation in use are applied as they are, missing settings are ignored', () => {
+		createJoinedSignaling()
+
+		signaling.setRefreshedSettings(null)
+		expect(signaling.settings.federation.helloAuthParams.token).toBe('old-federation-token')
+
+		signaling.setRefreshedSettings(structuredClone(freshSettings))
+		expect(signaling.settings.federation.helloAuthParams.token).toBe('fresh-federation-token')
+	})
+
+	test('after the own signaling server restarted, the conversation in use is joined with its own federation block', async () => {
+		createJoinedSignaling()
+		// As the listener in src/utils/webrtc/index.js: settings of the conversation the connection was created for
+		signaling.on('updateSettings', () => signaling.setRefreshedSettings({ ...settings, token: 'firsttoken', federation: null }))
+
+		// The hello of the new session is rejected with the expired own token
+		signaling.connected = false
+		receive({ id: '7', type: 'error', error: { code: 'token_expired', message: 'The token is expired.' } })
+		expect(signaling._pendingUpdateSettingsPromise).toBeUndefined()
+
+		// Connected again with a new session: the conversation in use is joined again (as in helloResponseReceived())
+		signaling.connected = true
+		signaling.signalingRoomJoined = null
+		signaling._joinRoomSuccess('localtoken', 'nextcloud-session')
+		const [join] = sentRoomMessages()
+		expect(join.room.federation.roomid).toBe('remotetoken')
+
+		// Its stale federation token is rejected by the host: joined again with fresh settings
+		rejectJoin(join, 'token_expired')
+		await vi.advanceTimersByTimeAsync(0)
+		const [, , rejoin] = sentRoomMessages()
+		expect(rejoin.room.federation.token).toBe('fresh-federation-token')
+	})
 })
