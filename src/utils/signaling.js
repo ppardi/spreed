@@ -18,7 +18,7 @@ import { PARTICIPANT } from '../constants.ts'
 import { hasTalkFeature } from '../services/CapabilitiesManager.ts'
 import { EventBus } from '../services/EventBus.ts'
 import { rejoinConversation } from '../services/participantsService.js'
-import { pullSignalingMessages } from '../services/signalingService.js'
+import { fetchSignalingSettings, pullSignalingMessages } from '../services/signalingService.js'
 import store from '../store/index.js'
 import { useActorStore } from '../stores/actor.ts'
 import pinia from '../stores/pinia.ts'
@@ -28,6 +28,10 @@ import { convertToUnix } from './formattedTime.ts'
 import { messagePleaseTryToReload } from './talkDesktopUtils.ts'
 
 const actorStore = useActorStore(pinia)
+
+// Delays before joining a federated conversation again after its link to the signaling server of its host failed:
+// right away (fresh settings fix an expired federation token), then with a growing backoff while the host stays unreachable
+const FEDERATED_REJOIN_DELAYS_MS = [0, 5_000, 10_000, 20_000, 40_000, 60_000]
 
 const Signaling = {
 	Base: {},
@@ -643,6 +647,11 @@ function Standalone(settings, urls) {
 	this.rooms = []
 	// Whether the link of the joined federated conversation to the signaling server of its host is interrupted
 	this.federationLinkInterrupted = false
+	this._federatedRejoinTimer = null
+	// Whether an attempt is waiting for its delay or for the settings (the answer to its join ends the recovery)
+	this._federatedRejoinPending = false
+	this._federatedRejoinAttempts = 0
+	this._federatedRejoinGeneration = 0
 	this.connect()
 	Signaling.Base.prototype._trigger.call(this, 'settingsUpdated', [settings])
 }
@@ -786,7 +795,10 @@ Signaling.Standalone.prototype.connect = function() {
 				}
 				break
 			case 'room':
-				if (this.currentRoomToken && data.room.roomid !== this.currentRoomToken) {
+				if (this.currentRoomToken && data.room.roomid !== this.currentRoomToken
+					// An answer to an own leave (only answers carry an id) is no move to another room, it may arrive after
+					// the next join
+					&& !(id && data.room.roomid === '')) {
 					this._trigger('roomChanged', [this.currentRoomToken, data.room.roomid])
 					this.joinedUsers = {}
 					this.currentRoomToken = null
@@ -816,12 +828,24 @@ Signaling.Standalone.prototype.connect = function() {
 				this.processTransientEvent(data)
 				break
 			case 'error':
+				if (!id && this._isFederatedRoomJoined()
+					&& (this.federationLinkInterrupted || data.error.code === 'token_expired')) {
+					// The signaling server gave up restoring the link of the federated conversation to the signaling server
+					// of its host (e.g. "token_expired" after the host was restarting)
+					console.error('The link to the signaling server of the conversation host failed', data.error)
+					this._scheduleFederatedRejoin()
+					break
+				}
 				switch (data.error.code) {
 					case 'processing_failed':
 						console.error('An error occurred processing the signaling message, please ask your server administrator to check the log file')
 						break
 					case 'token_expired':
-						this.processErrorTokenExpired()
+						if (!this.connected) {
+							// Expired token of the own connection (hello). While connected only a federated join is
+							// answered with it, which joinResponseReceived() handles.
+							this.processErrorTokenExpired()
+						}
 						break
 					case 'no_such_room':
 						console.error('An error occurred getting the room for user')
@@ -879,6 +903,7 @@ Signaling.Standalone.prototype.sendBye = function() {
 
 Signaling.Standalone.prototype.disconnect = function() {
 	this.federationLinkInterrupted = false
+	this._resetFederatedRejoin()
 	this.sendBye()
 	if (this.socket) {
 		this.socket.close()
@@ -1172,6 +1197,11 @@ Signaling.Standalone.prototype.helloResponseReceived = function(data) {
 Signaling.Standalone.prototype.joinRoom = function(token, sessionId) {
 	this.ownSessionJoined = false
 
+	if (token !== this.currentRoomToken) {
+		// Another conversation is opened: a pending rejoin of the previous one is obsolete
+		this._resetFederatedRejoin()
+	}
+
 	if (!this.sessionId) {
 		if (this._pendingJoinRoomPromise && this._pendingJoinRoomPromise.token === token) {
 			return this._pendingJoinRoomPromise
@@ -1309,6 +1339,18 @@ Signaling.Standalone.prototype.joinResponseReceived = function(data, token) {
 		this.processErrorNoSuchRoom()
 		return
 	}
+
+	if (data.type === 'error' && data.error.code !== 'already_joined' && this.settings.federation?.server) {
+		// Could not join the conversation on the signaling server of its host (e.g. with an expired federation token after
+		// an own reconnect, or while the host is restarting): try again with fresh settings
+		console.error('Joining the federated conversation on the signaling server failed', token, data.error)
+		if (token === this.currentRoomToken) {
+			this._scheduleFederatedRejoin()
+		}
+		return
+	}
+
+	this._resetFederatedRejoin()
 
 	this._rejoinRoomAfterInvalidSession = null
 	this.signalingRoomJoined = token
@@ -1465,6 +1507,7 @@ Signaling.Standalone.prototype.processRoomEvent = function(data) {
 			break
 		case 'federation_resumed':
 			console.info('The link to the signaling server of the conversation host was restored', this.currentRoomToken)
+			this._resetFederatedRejoin()
 			this._setFederationLinkInterrupted(false)
 			break
 		default:
@@ -1652,6 +1695,121 @@ Signaling.Standalone.prototype._setFederationLinkInterrupted = function(interrup
 
 	this.federationLinkInterrupted = interrupted
 	this._trigger('supportedFeatures', this._getSupportedFeatures())
+}
+
+/**
+ * Whether the current conversation is hosted on another server and joined on the signaling server
+ *
+ * @return {boolean}
+ */
+Signaling.Standalone.prototype._isFederatedRoomJoined = function() {
+	return this.connected
+		&& !!this.settings.federation?.server
+		&& !!this.currentRoomToken
+		&& this.signalingRoomJoined === this.currentRoomToken
+}
+
+/**
+ * Joins the current federated conversation again, after its link to the signaling server of its host failed or its join
+ * was rejected; with a backoff while that keeps happening. The chat polls meanwhile.
+ */
+Signaling.Standalone.prototype._scheduleFederatedRejoin = function() {
+	const token = this.currentRoomToken
+	if (!token || !this.settings.federation?.server || this._federatedRejoinPending) {
+		return
+	}
+
+	this._federatedRejoinPending = true
+	this._setFederationLinkInterrupted(true)
+	const generation = ++this._federatedRejoinGeneration
+	const delay = FEDERATED_REJOIN_DELAYS_MS[Math.min(this._federatedRejoinAttempts, FEDERATED_REJOIN_DELAYS_MS.length - 1)]
+	this._federatedRejoinAttempts++
+	this._federatedRejoinTimer = window.setTimeout(() => {
+		this._federatedRejoinTimer = null
+		this._rejoinFederatedRoom(token, generation)
+	}, delay)
+}
+
+/**
+ * Fetches the signaling settings of the conversation (with a new federation token for the signaling server of its host),
+ * then leaves and joins it again on the signaling server. The answer to the join ends the recovery (joinResponseReceived()).
+ *
+ * @param {string} token The token of the conversation
+ * @param {number} generation The attempt, outdated when the rejoin was reset or scheduled again meanwhile
+ */
+Signaling.Standalone.prototype._rejoinFederatedRoom = async function(token, generation) {
+	// Outdated when the rejoin was reset, or another conversation is opened (its settings are loaded before it is joined,
+	// and joinRoom() resets the rejoin)
+	const isOutdated = () => generation !== this._federatedRejoinGeneration
+		|| token !== this.currentRoomToken
+		|| this.settings.token !== token
+	if (isOutdated()) {
+		return
+	}
+
+	let settings = null
+	try {
+		// Fetched here instead of through "updateSettings", so that a failure (host unreachable) can't delay the own
+		// connection, which waits for updated settings
+		const response = await fetchSignalingSettings({ token }, {})
+		settings = response.data.ocs.data
+	} catch (exception) {
+		console.warn('Failed to get the signaling settings of the federated conversation', token, exception)
+	}
+
+	if (isOutdated()) {
+		return
+	}
+
+	this._federatedRejoinPending = false
+
+	if (settings === null) {
+		// The host is probably still unreachable: try again after the backoff, the chat keeps polling meanwhile
+		this._scheduleFederatedRejoin()
+		return
+	}
+
+	if (!settings.federation?.server) {
+		// No signaling server of the host any more (nothing to rejoin): the chat keeps polling
+		console.info('The federated conversation has no signaling server of its host any more', token)
+		return
+	}
+
+	settings.token = token
+	this.setSettings(settings)
+
+	if (!this.connected || !this.socket) {
+		// The own connection is being established again and would drop messages sent now. A new session joins by itself
+		// with the fresh settings (its answer ends the recovery), a resumed one is joined by the next attempt.
+		this._scheduleFederatedRejoin()
+		return
+	}
+
+	console.info('Joining the federated conversation again on the signaling server', token)
+	// Leaving drops the broken link on the signaling server (which does not answer then, as the link is gone), joining
+	// creates a new one with the fresh federation token. The callback gives an answer, if any, an id (see "case 'room'").
+	this.doSend({
+		type: 'room',
+		room: {
+			roomid: '',
+		},
+	}, () => {
+		console.debug('Left the federated conversation to join it again', token)
+	})
+	this._joinRoomSuccess(token, this.nextcloudSessionId)
+}
+
+/**
+ * Cancels a pending rejoin and starts the backoff over
+ */
+Signaling.Standalone.prototype._resetFederatedRejoin = function() {
+	if (this._federatedRejoinTimer !== null) {
+		window.clearTimeout(this._federatedRejoinTimer)
+		this._federatedRejoinTimer = null
+	}
+	this._federatedRejoinPending = false
+	this._federatedRejoinAttempts = 0
+	this._federatedRejoinGeneration++
 }
 
 Signaling.Standalone.prototype.requestOffer = function(sessionid, roomType, sid = undefined) {
