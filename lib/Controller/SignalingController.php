@@ -11,6 +11,7 @@ namespace OCA\Talk\Controller;
 use OCA\Talk\Authenticator;
 use OCA\Talk\Config;
 use OCA\Talk\Events\BeforeSignalingResponseSentEvent;
+use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\ForbiddenException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
@@ -53,6 +54,9 @@ use Psr\Log\LoggerInterface;
  * @psalm-import-type TalkSignalingSettings from ResponseDefinitions
  */
 class SignalingController extends OCSController {
+	/** Most TURN servers of the host of a federated conversation that are given to the clients */
+	private const MAX_HOST_TURN_SERVERS = 5;
+
 	/** @var int */
 	private const PULL_MESSAGES_TIMEOUT = 30;
 
@@ -259,13 +263,19 @@ class SignalingController extends OCSController {
 
 		$signalingMode = $this->talkConfig->getSignalingMode();
 		$signaling = $this->signalingManager->getSignalingServerLinkForConversation($room);
+		$hostSettings = $this->getHostSignalingSettings($room);
+		if ($hostSettings !== null) {
+			// Calls in a conversation hosted on another server use the media server of the host, which may only be
+			// reachable through the TURN servers of the host (e.g. Nextcloud All-in-One). The own ones stay as a fallback.
+			$turn = array_merge($this->getHostTurnServers($hostSettings['turnservers'] ?? null), $turn);
+		}
 
 		$data = [
 			'signalingMode' => $signalingMode,
 			'userId' => $this->userId,
 			'hideWarning' => $signaling !== '' || $this->talkConfig->getHideSignalingWarning(),
 			'server' => $signaling,
-			'federation' => $this->getFederationSettings($room),
+			'federation' => $room !== null && $hostSettings !== null ? $this->getFederationSettings($room, $hostSettings) : null,
 			'stunservers' => $stun,
 			'turnservers' => $turn,
 			'sipDialinInfo' => $this->talkConfig->isSIPConfigured() ? $this->talkConfig->getDialInInfo() : '',
@@ -343,9 +353,12 @@ class SignalingController extends OCSController {
 	}
 
 	/**
-	 * @psalm-return ?TalkSignalingFederationSettings
+	 * The signaling settings the host of a conversation hosted on another server gives the current user
+	 *
+	 * @psalm-return ?TalkSignalingSettings
+	 * @throws CannotReachRemoteException
 	 */
-	private function getFederationSettings(?Room $room): ?array {
+	private function getHostSignalingSettings(?Room $room): ?array {
 		if ($room === null || !$room->isFederatedConversation()) {
 			return null;
 		}
@@ -366,15 +379,70 @@ class SignalingController extends OCSController {
 
 		/** @var TalkSignalingSettings $data */
 		$data = $response->getData();
+		return $data;
+	}
 
+	/**
+	 * @param TalkSignalingSettings $hostSettings
+	 * @psalm-return TalkSignalingFederationSettings
+	 */
+	private function getFederationSettings(Room $room, array $hostSettings): array {
 		return [
-			'server' => $data['server'],
+			'server' => $hostSettings['server'],
 			'nextcloudServer' => $room->getRemoteServer(),
 			'helloAuthParams' => [
-				'token' => $data['helloAuthParams']['2.0']['token'],
+				'token' => $hostSettings['helloAuthParams']['2.0']['token'],
 			],
 			'roomId' => $room->getRemoteToken(),
 		];
+	}
+
+	/**
+	 * The well-formed TURN servers from the settings of a host, at most MAX_HOST_TURN_SERVERS (the answer comes from
+	 * another server, and the clients try every server they get)
+	 *
+	 * @return list<array{urls: list<string>, username: string, credential: string}>
+	 */
+	private function getHostTurnServers(mixed $turnServers): array {
+		if (!is_array($turnServers)) {
+			return [];
+		}
+
+		$result = [];
+		foreach ($turnServers as $turnServer) {
+			if (!is_array($turnServer)) {
+				continue;
+			}
+
+			// Local variables, so that the type checks narrow them
+			$turnUrls = $turnServer['urls'] ?? null;
+			$username = $turnServer['username'] ?? null;
+			$credential = $turnServer['credential'] ?? null;
+			if (!is_array($turnUrls) || !is_string($username) || !is_string($credential)) {
+				continue;
+			}
+
+			$urls = [];
+			foreach ($turnUrls as $url) {
+				if (is_string($url) && (str_starts_with($url, 'turn:') || str_starts_with($url, 'turns:'))) {
+					$urls[] = $url;
+				}
+			}
+			if ($urls === []) {
+				continue;
+			}
+
+			$result[] = [
+				'urls' => $urls,
+				'username' => $username,
+				'credential' => $credential,
+			];
+			if (count($result) === self::MAX_HOST_TURN_SERVERS) {
+				break;
+			}
+		}
+
+		return $result;
 	}
 
 	/**

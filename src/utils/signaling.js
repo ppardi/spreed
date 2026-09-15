@@ -164,6 +164,16 @@ Signaling.Base.prototype.setRefreshedSettings = function(settings) {
 	this.setSettings(settings)
 }
 
+/**
+ * Announces the STUN and TURN servers of the settings in use again, so that WebRTC (set up once) uses those of the
+ * conversation whose call is joined for new peer connections: a conversation hosted on another server has the TURN
+ * servers of its host
+ */
+Signaling.Base.prototype.announceIceServers = function() {
+	this._trigger('stunservers', [this.settings.stunservers || []])
+	this._trigger('turnservers', [this.settings.turnservers || []])
+}
+
 Signaling.Base.prototype.getSessionId = function() {
 	return this.sessionId
 }

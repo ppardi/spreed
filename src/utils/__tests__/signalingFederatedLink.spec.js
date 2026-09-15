@@ -517,4 +517,27 @@ describe('signaling: link of a federated conversation to the signaling server of
 		const [, , rejoin] = sentRoomMessages()
 		expect(rejoin.room.federation.token).toBe('fresh-federation-token')
 	})
+
+	test('the STUN and TURN servers of the settings in use are announced again for a call', () => {
+		const stunservers = [{ urls: ['stun:own.test:443'] }]
+		const ownTurnServer = { urls: ['turn:own.test:3478?transport=udp'], username: 'own', credential: 'own' }
+		createJoinedSignaling({ ...settings, stunservers, turnservers: [ownTurnServer] })
+		// As SimpleWebRTC: the STUN servers replace the ICE servers, the TURN servers are added
+		let iceServers = []
+		signaling.on('stunservers', (servers) => {
+			iceServers = [...servers]
+		})
+		signaling.on('turnservers', (servers) => {
+			iceServers = [...iceServers, ...servers]
+		})
+		expect(iceServers.flatMap((server) => server.urls)).toEqual(['stun:own.test:443', 'turn:own.test:3478?transport=udp'])
+
+		// The settings of a conversation hosted on another server: the TURN servers of its host come first
+		const hostTurnServer = { urls: ['turn:host.test:3478?transport=udp'], username: 'host', credential: 'host' }
+		signaling.setSettings({ ...settings, stunservers, turnservers: [hostTurnServer, ownTurnServer] })
+		signaling.announceIceServers()
+
+		expect(iceServers.flatMap((server) => server.urls))
+			.toEqual(['stun:own.test:443', 'turn:host.test:3478?transport=udp', 'turn:own.test:3478?transport=udp'])
+	})
 })

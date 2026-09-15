@@ -244,6 +244,7 @@ async function signalingJoinCall(token, flags, silent, recordingConsent, silentF
 		pendingJoinCallToken = token
 
 		setupWebRtc()
+		signaling.announceIceServers()
 
 		sentVideoQualityThrottler = new SentVideoQualityThrottler(localMediaModel, callParticipantCollection, webRtc.webrtc._videoTrackConstrainer)
 		speakingStatusHandler = new SpeakingStatusHandler(store, localMediaModel, localCallParticipantModel, callParticipantCollection)
