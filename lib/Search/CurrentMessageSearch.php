@@ -81,13 +81,13 @@ class CurrentMessageSearch extends MessageSearch {
 		}
 
 		try {
-			$this->participantService->getParticipant($room, $user->getUID(), false);
+			$participant = $this->participantService->getParticipant($room, $user->getUID(), false);
 		} catch (ParticipantNotFoundException) {
 			return SearchResult::complete($title, []);
 		}
 
 		if ($room->isFederatedConversation()) {
-			return SearchResult::complete($title, []);
+			return $this->performFederatedSearch($user, $query, $title, $room, $participant);
 		}
 
 		return $this->performSearch($user, $query, $this->l->t('Messages'), [$room], true);
