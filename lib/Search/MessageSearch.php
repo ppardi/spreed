@@ -12,11 +12,15 @@ use OCA\Talk\AppInfo\Application;
 use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Chat\MessageParser;
 use OCA\Talk\Config;
+use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Exceptions\UnauthorizedException;
+use OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController as ProxyChatController;
 use OCA\Talk\Manager as RoomManager;
 use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
+use OCA\Talk\ResponseDefinitions;
 use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Service\ThreadService;
@@ -36,9 +40,16 @@ use OCP\Search\ISearchQuery;
 use OCP\Search\SearchResult;
 use OCP\Search\SearchResultEntry;
 
+/**
+ * @psalm-import-type TalkChatMessage from ResponseDefinitions
+ * @psalm-import-type TalkRichObjectParameter from ResponseDefinitions
+ */
 class MessageSearch implements IProvider, IFilteringProvider {
 
 	public const CONVERSATION_FILTER = 'conversation';
+
+	/** Most messages a host returns per search request (the host clamps to the same value) */
+	public const FEDERATED_SEARCH_MAX_LIMIT = 100;
 
 	protected bool $isConversationFiltered = false;
 
@@ -53,6 +64,7 @@ class MessageSearch implements IProvider, IFilteringProvider {
 		protected readonly Config $talkConfig,
 		protected readonly IUserSession $userSession,
 		protected readonly ThreadService $threadService,
+		protected readonly ProxyChatController $proxyChatController,
 	) {
 	}
 
@@ -121,13 +133,23 @@ class MessageSearch implements IProvider, IFilteringProvider {
 			$title = $this->l->t('Messages');
 
 			try {
-				$rooms = [$this->roomManager->getRoomForUserByToken(
+				$room = $this->roomManager->getRoomForUserByToken(
 					$filter->get(),
 					$user->getUID()
-				)];
+				);
 			} catch (RoomNotFoundException) {
 				return SearchResult::complete($title, []);
 			}
+
+			if ($room->isFederatedConversation()) {
+				try {
+					$participant = $this->participantService->getParticipant($room, $user->getUID(), false);
+				} catch (ParticipantNotFoundException) {
+					return SearchResult::complete($title, []);
+				}
+				return $this->performFederatedSearch($user, $query, $title, $room, $participant);
+			}
+			$rooms = [$room];
 		} elseif ($filter) {
 			// The filter is the "Current conversation" so the CurrentMessageSearch will handle it
 			return SearchResult::complete($title, []);
@@ -230,23 +252,10 @@ class MessageSearch implements IProvider, IFilteringProvider {
 	protected function commentToSearchResultEntry(Room $room, IUser $user, IComment $comment, ISearchQuery $query): SearchResultEntry {
 		$participant = $this->participantService->getParticipant($room, $user->getUID(), false);
 
-		$id = (int)$comment->getId();
 		$message = $this->messageParser->createMessage($room, $participant, $comment, $this->l);
 		$this->messageParser->parseMessage($message);
 
-		$messageStr = $message->getMessage();
-		$search = $replace = [];
-		foreach ($message->getMessageParameters() as $key => $parameter) {
-			$search[] = '{' . $key . '}';
-			if ($parameter['type'] === 'user') {
-				$replace[] = '@' . $parameter['name'];
-			} else {
-				$replace[] = $parameter['name'];
-			}
-		}
-		$messageStr = str_replace($search, $replace, $messageStr);
-
-		$messageStr = $this->cutMessageToSearchResult($messageStr, $query->getTerm(), $participant->getAttendee()->isSensitive());
+		$messageStr = $this->formatMessageText($message->getMessage(), $message->getMessageParameters(), $query->getTerm(), $participant->getAttendee()->isSensitive());
 
 		$now = $this->timeFactory->getDateTime();
 		$expireDate = $message->getComment()->getExpireDate();
@@ -266,30 +275,173 @@ class MessageSearch implements IProvider, IFilteringProvider {
 			]);
 		}
 
+		$threadId = (int)$comment->getTopmostParentId() ?: (int)$comment->getId();
+		try {
+			$thread = $this->threadService->findByThreadId($room->getId(), $threadId);
+		} catch (DoesNotExistException) {
+			$thread = null;
+		}
+
+		return $this->createSearchResultEntry(
+			$room,
+			$user,
+			$iconUrl,
+			$this->formatActorDisplayName($message->getActorType(), $message->getActorDisplayName()),
+			$messageStr,
+			$comment->getId(),
+			$thread?->getId(),
+			$comment->getActorType(),
+			$comment->getActorId(),
+			$comment->getCreationDateTime()->getTimestamp(),
+		);
+	}
+
+	/**
+	 * Searches a conversation hosted on another server: the host searches, this server shows its answer
+	 */
+	protected function performFederatedSearch(IUser $user, ISearchQuery $query, string $title, Room $room, Participant $participant): SearchResult {
+		$since = $query->getFilter(IFilter::BUILTIN_SINCE)?->get();
+		$until = $query->getFilter(IFilter::BUILTIN_UNTIL)?->get();
+
+		$actorType = $actorId = '';
+		$person = $query->getFilter(IFilter::BUILTIN_PERSON)?->get();
+		if ($person instanceof IUser) {
+			// The host knows the users of this server by the cloud id they were invited with
+			try {
+				$personParticipant = $person->getUID() === $user->getUID()
+					? $participant
+					: $this->participantService->getParticipant($room, $person->getUID(), false);
+			} catch (ParticipantNotFoundException) {
+				return SearchResult::complete($title, []);
+			}
+			$actorType = Attendee::ACTOR_FEDERATED_USERS;
+			$actorId = $personParticipant->getAttendee()->getInvitedCloudId();
+			if ($actorId === '') {
+				return SearchResult::complete($title, []);
+			}
+		}
+
+		$offset = (int)$query->getCursor();
+		// The same limit for the request and the next cursor, so no results are skipped when the host returns fewer
+		$limit = min(self::FEDERATED_SEARCH_MAX_LIMIT, $query->getLimit());
+		try {
+			$messages = $this->proxyChatController->searchMessages(
+				$room,
+				$participant,
+				$query->getTerm(),
+				$since instanceof \DateTimeImmutable ? $since->getTimestamp() : 0,
+				$until instanceof \DateTimeImmutable ? $until->getTimestamp() : 0,
+				$actorType,
+				$actorId,
+				$offset,
+				$limit,
+			);
+		} catch (CannotReachRemoteException) {
+			return SearchResult::complete($title, []);
+		}
+
+		// Resolved once here: federatedMessageToSearchResultEntry() has no Participant in scope,
+		// and resolving it per message would query the participant for every result row
+		$isSensitive = $participant->getAttendee()->isSensitive();
+
+		$result = array_map(
+			fn (array $message): SearchResultEntry => $this->federatedMessageToSearchResultEntry($room, $user, $message, $query, $isSensitive),
+			$messages,
+		);
+
+		return SearchResult::paginated(
+			$title,
+			$result,
+			$offset + $limit
+		);
+	}
+
+	/**
+	 * @param TalkChatMessage $message A message of the host, with actors as this server knows them
+	 */
+	protected function federatedMessageToSearchResultEntry(Room $room, IUser $user, array $message, ISearchQuery $query, bool $isSensitive): SearchResultEntry {
+		$iconUrl = match ($message['actorType']) {
+			Attendee::ACTOR_USERS => $this->url->linkToRouteAbsolute('core.avatar.getAvatar', [
+				'userId' => $message['actorId'],
+				'size' => 512,
+			]),
+			Attendee::ACTOR_FEDERATED_USERS => $this->url->linkToOCSRouteAbsolute('spreed.Avatar.getUserProxyAvatar', [
+				'apiVersion' => 'v1',
+				'token' => $room->getToken(),
+				'size' => 512,
+				'cloudId' => $message['actorId'],
+			]),
+			default => '',
+		};
+
+		// Threads are not available in federated conversations, so results open the message in the main chat
+		return $this->createSearchResultEntry(
+			$room,
+			$user,
+			$iconUrl,
+			$this->formatActorDisplayName($message['actorType'], $message['actorDisplayName']),
+			$this->formatMessageText($message['message'], $message['messageParameters'], $query->getTerm(), $isSensitive),
+			(string)$message['id'],
+			null,
+			$message['actorType'],
+			$message['actorId'],
+			$message['timestamp'],
+		);
+	}
+
+	/**
+	 * The message with its parameters written out, cut down to the part surrounding the search result
+	 *
+	 * @param array<string, TalkRichObjectParameter> $messageParameters
+	 */
+	protected function formatMessageText(string $message, array $messageParameters, string $term, bool $isSensitive): string {
+		$search = $replace = [];
+		foreach ($messageParameters as $key => $parameter) {
+			$search[] = '{' . $key . '}';
+			if ($parameter['type'] === 'user') {
+				$replace[] = '@' . $parameter['name'];
+			} else {
+				$replace[] = $parameter['name'];
+			}
+		}
+		$message = str_replace($search, $replace, $message);
+
+		return $this->cutMessageToSearchResult($message, $term, $isSensitive);
+	}
+
+	protected function formatActorDisplayName(string $actorType, string $displayName): string {
+		if (in_array($actorType, [Attendee::ACTOR_GUESTS, Attendee::ACTOR_EMAILS], true)) {
+			if ($displayName === '') {
+				return $this->l->t('Guest');
+			}
+			return $this->l->t('%s (guest)', $displayName);
+		}
+		return $displayName;
+	}
+
+	protected function createSearchResultEntry(
+		Room $room,
+		IUser $user,
+		string $iconUrl,
+		string $displayName,
+		string $messageStr,
+		string $messageId,
+		?int $threadId,
+		string $actorType,
+		string $actorId,
+		int $timestamp,
+	): SearchResultEntry {
 		$subline = $this->getSublineTemplate();
 		if ($room->getType() === Room::TYPE_ONE_TO_ONE || $room->getType() === Room::TYPE_ONE_TO_ONE_FORMER) {
 			$subline = '{user}';
 		}
 
-		$displayName = $message->getActorDisplayName();
-		if (in_array($message->getActorType(), [Attendee::ACTOR_GUESTS, Attendee::ACTOR_EMAILS], true)) {
-			if ($displayName === '') {
-				$displayName = $this->l->t('Guest');
-			} else {
-				$displayName = $this->l->t('%s (guest)', $displayName);
-			}
-		}
-
 		$urlParams = [
 			'token' => $room->getToken(),
-			'_fragment' => 'message_' . $id,
+			'_fragment' => 'message_' . $messageId,
 		];
-		$threadId = (int)$comment->getTopmostParentId() ?: (int)$comment->getId();
-		try {
-			$thread = $this->threadService->findByThreadId($room->getId(), $threadId);
-			$urlParams['threadId'] = $thread->getId();
-		} catch (DoesNotExistException) {
-			$thread = null;
+		if ($threadId !== null) {
+			$urlParams['threadId'] = $threadId;
 		}
 
 		$entry = new SearchResultEntry(
@@ -306,13 +458,13 @@ class MessageSearch implements IProvider, IFilteringProvider {
 		);
 
 		$entry->addAttribute('conversation', $room->getToken());
-		$entry->addAttribute('messageId', $comment->getId());
-		if ($thread !== null) {
-			$entry->addAttribute('threadId', (string)$thread->getId());
+		$entry->addAttribute('messageId', $messageId);
+		if ($threadId !== null) {
+			$entry->addAttribute('threadId', (string)$threadId);
 		}
-		$entry->addAttribute('actorType', $comment->getActorType());
-		$entry->addAttribute('actorId', $comment->getActorId());
-		$entry->addAttribute('timestamp', '' . $comment->getCreationDateTime()->getTimestamp());
+		$entry->addAttribute('actorType', $actorType);
+		$entry->addAttribute('actorId', $actorId);
+		$entry->addAttribute('timestamp', (string)$timestamp);
 
 		return $entry;
 	}
