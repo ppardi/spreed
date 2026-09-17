@@ -139,6 +139,9 @@ class Capabilities implements IPublicCapability {
 		'classified-conversations',
 		'announcement-preset',
 		'promote-demote-owner',
+		'federated-attachments',
+		'federated-attachments-upload',
+		'federated-message-search',
 	];
 
 	public const CONDITIONAL_FEATURES = [

@@ -11,6 +11,7 @@ namespace OCA\Talk;
 
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
+use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Model\Attendee;
 use OCP\Federation\ICloudIdManager;
 use OCP\IRequest;
@@ -76,6 +77,14 @@ class Authenticator {
 	public function isAuthenticatedRequest(): bool {
 		$this->resolve();
 		return $this->isFederationRequest || $this->isAuthenticatedEmailGuest;
+	}
+
+	/**
+	 * Whether the remote server of a federated request can resolve `federated-file` references
+	 */
+	public function supportsFederatedAttachments(): bool {
+		return $this->isFederationRequest()
+			&& $this->request->getHeader(FeatureSupport::REQUEST_HEADER) === '1';
 	}
 
 	public function getActorType(): string {
