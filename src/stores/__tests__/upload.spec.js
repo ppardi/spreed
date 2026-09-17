@@ -553,6 +553,46 @@ describe('fileUploadStore', () => {
 				expect(shareFile).toHaveBeenCalledTimes(1)
 			})
 
+			test('stops instead of falling back when the probe fails in a federated conversation', async () => {
+				conversationGetter.mockReturnValue({ type: 2, displayName: 'My Room', remoteServer: 'https://nc1.test' })
+				probeAttachmentFolder.mockRejectedValueOnce(new Error('boom'))
+
+				const file = { name: 'photo.jpg', type: 'image/jpeg', size: 100, lastModified: 0 }
+				uploadStore.initialiseUpload({ uploadId: 'upload-id1', token: TOKEN, files: [file] })
+
+				await uploadStore.uploadFiles({ token: TOKEN, uploadId: 'upload-id1', options: null })
+
+				expect(uploadMock).not.toHaveBeenCalled()
+				expect(shareFile).not.toHaveBeenCalled()
+				expect(postAttachment).not.toHaveBeenCalled()
+				expect(showError).toHaveBeenCalled()
+				expect(vuexStoreDispatch).toHaveBeenCalledWith('markTemporaryMessageAsFailed', expect.objectContaining({ token: TOKEN, reason: 'failed-upload' }))
+			})
+
+			test('asks the host about the compressed file name when compression rewrites it', async () => {
+				conversationGetter.mockReturnValue({ type: 2, displayName: 'My Room', remoteServer: 'https://nc1.test' })
+
+				// Use real File instances: compressUploadedImage() replaces the staged file in place
+				const file = new File([new Uint8Array(4096)], 'photo.png', { type: 'image/png', lastModified: 0 })
+				const compressed = new File([new Uint8Array(1024)], 'photo.webp', { type: 'image/webp', lastModified: 0 })
+				// compressImage() needs createImageBitmap() and a canvas encoder, neither of which
+				// jsdom provides, so the module is mocked (see the module-level vi.mock above)
+				compressImage.mockResolvedValue(compressed)
+
+				uploadStore.initialiseUpload({ uploadId: 'upload-id1', token: TOKEN, files: [file] })
+
+				await uploadStore.uploadFiles({ token: TOKEN, uploadId: 'upload-id1', options: null, compressImages: true })
+
+				// Talk 25 rewrites .png to .webp before the host is asked about the names,
+				// so the name the host stores must be the compressed one
+				expect(probeAttachmentFolder).toHaveBeenCalledWith(expect.objectContaining({
+					token: TOKEN,
+					fileNames: ['photo.webp'],
+				}))
+				expect(postAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileName: 'photo.webp' }))
+				expect(shareFile).not.toHaveBeenCalled()
+			})
+
 			test('falls back to shareFile when conversation-subfolders capability is false', async () => {
 				getTalkConfig.mockReturnValueOnce(false)
 				conversationGetter.mockReturnValue({ type: 2, displayName: 'My Room' })

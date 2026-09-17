@@ -78,11 +78,11 @@ import { useGetThreadId } from '../composables/useGetThreadId.ts'
 import { useGetToken } from '../composables/useGetToken.ts'
 import { useUploadFiles } from '../composables/useUploadFiles.ts'
 import { CONVERSATION, PARTICIPANT } from '../constants.ts'
-import { getTalkConfig } from '../services/CapabilitiesManager.ts'
 import { EventBus } from '../services/EventBus.ts'
 import { useActorStore } from '../stores/actor.ts'
 import { useChatExtrasStore } from '../stores/chatExtras.ts'
 import { useSettingsStore } from '../stores/settings.ts'
+import { canUploadFilesInConversation } from '../utils/attachments.ts'
 
 export default {
 
@@ -149,9 +149,8 @@ export default {
 		},
 
 		canUploadFiles() {
-			return getTalkConfig(this.token, 'attachments', 'allowed')
+			return canUploadFilesInConversation({ token: this.token, type: this.conversation.type, remoteServer: this.conversation.remoteServer })
 				&& (this.conversation.permissions & PARTICIPANT.PERMISSIONS.CHAT)
-				&& !this.conversation.remoteServer // no attachments support in federated conversations
 		},
 
 		isDragAndDropBlocked() {
