@@ -63,7 +63,7 @@ class ConversationFolderService {
 
 	/**
 	 * Returns the user's conversation subfolder for the given room,
-	 * creating the full folder hierarchy and the share if not yet present.
+	 * creating the full folder hierarchy and the share if not yet present (no share for federated conversations).
 	 *
 	 * @throws NotEnoughSpaceException if the user's storage quota is exhausted
 	 * @throws \RuntimeException if a path component exists but is not a folder
@@ -112,7 +112,11 @@ class ConversationFolderService {
 			$subfolder = $convFolder->newFolder($subfolderName);
 		}
 
-		$this->ensureSubfolderShared($subfolder, $userId, $room->getToken(), $allowUpdate);
+		if (!$room->isFederatedConversation()) {
+			$this->ensureSubfolderShared($subfolder, $userId, $room->getToken(), $allowUpdate);
+		}
+		// else: the conversation lives on another server. The folder stays here and is shared with each participant
+		// on another server when a file is posted (federated attachments).
 
 		return $subfolder;
 	}

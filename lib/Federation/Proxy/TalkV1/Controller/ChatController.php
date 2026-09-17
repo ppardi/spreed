@@ -12,6 +12,8 @@ namespace OCA\Talk\Federation\Proxy\TalkV1\Controller;
 use OCA\Talk\CachePrefix;
 use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
+use OCA\Talk\Federation\Attachments\AttachmentSharer;
+use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Proxy\TalkV1\ProxyRequest;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
 use OCA\Talk\Model\Attendee;
@@ -20,8 +22,12 @@ use OCA\Talk\ResponseDefinitions;
 use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Service\RoomFormatter;
+use OCA\Talk\Share\Helper\FilesMetadataCache;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\DataResponse;
+use OCP\Files\Folder;
+use OCP\Files\Node;
+use OCP\FilesMetadata\Exceptions\FilesMetadataNotFoundException;
 use OCP\ICache;
 use OCP\ICacheFactory;
 
@@ -37,10 +43,13 @@ class ChatController {
 	public function __construct(
 		private readonly ProxyRequest $proxy,
 		private readonly UserConverter $userConverter,
+		private readonly FederatedFileConverter $fileConverter,
 		private readonly ParticipantService $participantService,
 		private readonly RoomFormatter $roomFormatter,
 		private readonly Notifier $notifier,
 		ICacheFactory $cacheFactory,
+		private readonly AttachmentSharer $attachmentSharer,
+		private readonly FilesMetadataCache $metadataCache,
 	) {
 		$this->proxyCacheMessages = $cacheFactory->isAvailable() ? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PCM) : null;
 	}
@@ -92,6 +101,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_CREATED]);
 		if (!empty($data)) {
 			$data = $this->userConverter->convertMessage($room, $data);
+			$data = $this->fileConverter->convertMessage($room, $participant, $data);
 		} else {
 			$data = null;
 		}
@@ -106,6 +116,114 @@ class ChatController {
 			Http::STATUS_CREATED,
 			$headers,
 		);
+	}
+
+	/**
+	 * @see \OCA\Talk\Controller\ChatController::postAttachmentToRoom()
+	 *
+	 * The file stays on this server, in the participant's conversation folder: the folder is shared with the
+	 * conversation's participants on other servers, then the host posts the message (design §6).
+	 * When the host then refuses the post, the file stays in the (shared) folder without a message; the user
+	 * sees the error and can send it again.
+	 *
+	 * @return DataResponse<Http::STATUS_BAD_REQUEST|Http::STATUS_FORBIDDEN|Http::STATUS_NOT_FOUND, array{error: string}, array{}>|null Null when the host posted the message
+	 * @throws CannotReachRemoteException
+	 *
+	 * 400: The host did not list the participants, or refused the file
+	 * 403: Not allowed on the host
+	 * 404: Conversation (or federated attachments) not found on the host
+	 */
+	public function postAttachment(Room $room, Participant $participant, Folder $senderFolder, Node $file, string $talkMetaData, string $referenceId): ?DataResponse {
+		$participantCloudIds = $this->getParticipantCloudIds($room, $participant);
+		if ($participantCloudIds === null) {
+			return new DataResponse(['error' => 'participants'], Http::STATUS_BAD_REQUEST);
+		}
+
+		$attendee = $participant->getAttendee();
+		$shares = $this->attachmentSharer->shareSenderFolder($room, $attendee->getActorId(), $senderFolder, $participantCloudIds);
+
+		$proxy = $this->proxy->post(
+			$attendee->getInvitedCloudId(),
+			$attendee->getAccessToken(),
+			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v1/chat/' . $room->getRemoteToken() . '/federated-attachment',
+			[
+				'folderId' => (string)$senderFolder->getId(),
+				'file' => $this->getFileData($senderFolder, $file),
+				'shares' => $shares,
+				'talkMetaData' => $talkMetaData,
+				'referenceId' => $referenceId,
+				'actorDisplayName' => $attendee->getDisplayName(),
+			],
+		);
+
+		$statusCode = $proxy->getStatusCode();
+		if ($statusCode === Http::STATUS_CREATED) {
+			return null;
+		}
+		if (!in_array($statusCode, [Http::STATUS_BAD_REQUEST, Http::STATUS_FORBIDDEN, Http::STATUS_NOT_FOUND], true)) {
+			$statusCode = $this->proxy->logUnexpectedStatusCode(__METHOD__, $statusCode);
+		}
+		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_CREATED]);
+		return new DataResponse(['error' => is_string($data['error'] ?? null) ? $data['error'] : 'remote'], $statusCode);
+	}
+
+	/**
+	 * @see RoomController::getParticipants() — asked directly, because an error answer must not read as an empty list
+	 *
+	 * @return list<string>|null Cloud ids of the conversation's participants on other servers, users of the host
+	 *                           included; null when the host did not answer with the list (ruling R12)
+	 * @throws CannotReachRemoteException
+	 */
+	private function getParticipantCloudIds(Room $room, Participant $participant): ?array {
+		$proxy = $this->proxy->get(
+			$participant->getAttendee()->getInvitedCloudId(),
+			$participant->getAttendee()->getAccessToken(),
+			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v4/room/' . $room->getRemoteToken() . '/participants',
+		);
+		if ($proxy->getStatusCode() !== Http::STATUS_OK) {
+			$this->proxy->logUnexpectedStatusCode(__METHOD__, $proxy->getStatusCode());
+			return null;
+		}
+
+		$cloudIds = [];
+		$participants = $this->userConverter->convertAttendees($room, $this->proxy->getOCSData($proxy), 'actorType', 'actorId', 'displayName');
+		foreach ($participants as $entry) {
+			// After the conversion, users of this server are "users" and everyone else "federated_users"
+			if (is_array($entry) && ($entry['actorType'] ?? null) === Attendee::ACTOR_FEDERATED_USERS && is_string($entry['actorId'] ?? null)) {
+				$cloudIds[] = $entry['actorId'];
+			}
+		}
+		return $cloudIds;
+	}
+
+	/**
+	 * @return array{path: string, name: string, size: int, mimetype: string, etag: string, fileId: string, width?: int, height?: int, blurhash?: string}
+	 */
+	private function getFileData(Folder $senderFolder, Node $file): array {
+		$data = [
+			'path' => ltrim((string)$senderFolder->getRelativePath($file->getPath()), '/'),
+			'name' => $file->getName(),
+			'size' => (int)$file->getSize(),
+			'mimetype' => $file->getMimeType(),
+			'etag' => $file->getEtag(),
+			'fileId' => (string)$file->getId(),
+		];
+
+		if (str_starts_with($file->getMimeType(), 'image/')) {
+			try {
+				$metadata = $this->metadataCache->getImageMetadataForFileId($file->getId());
+			} catch (FilesMetadataNotFoundException) {
+				$metadata = [];
+			}
+			if (isset($metadata['width'], $metadata['height'])) {
+				$data['width'] = (int)$metadata['width'];
+				$data['height'] = (int)$metadata['height'];
+			}
+			if (isset($metadata['blurhash'])) {
+				$data['blurhash'] = (string)$metadata['blurhash'];
+			}
+		}
+		return $data;
 	}
 
 	/**
@@ -205,6 +323,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy);
 		/** @var list<TalkChatMessageWithParent> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
+		$data = array_values($this->fileConverter->convertMessages($room, $participant, $data));
 
 		return new DataResponse($data, Http::STATUS_OK, $headers);
 	}
@@ -248,6 +367,7 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy);
 		/** @var list<TalkChatMessageWithParent> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
+		$data = array_values($this->fileConverter->convertMessages($room, $participant, $data));
 
 		return new DataResponse($data, Http::STATUS_OK, $headers);
 	}
@@ -276,7 +396,7 @@ class ChatController {
 
 		$result = [];
 		foreach ($data as $type => $items) {
-			$result[$type] = array_values($this->userConverter->convertMessages($room, $items));
+			$result[$type] = array_values($this->fileConverter->convertMessages($room, $participant, $this->userConverter->convertMessages($room, $items)));
 		}
 
 		/** @var array<string, list<TalkChatMessage>> $result */
@@ -308,8 +428,12 @@ class ChatController {
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_OK, Http::STATUS_NOT_ACCEPTABLE]);
 		/** @var array<string, TalkChatMessage> $data */
 		$data = $this->userConverter->convertMessages($room, $data);
+		$result = [];
+		foreach ($data as $key => $item) {
+			$result[$key] = $this->fileConverter->convertMessage($room, $participant, $item);
+		}
 
-		return new DataResponse($data, Http::STATUS_OK);
+		return new DataResponse($result, Http::STATUS_OK);
 	}
 
 	/**
@@ -347,6 +471,7 @@ class ChatController {
 		if (!empty($data)) {
 			/** @var TalkChatMessageWithParent $data */
 			$data = $this->userConverter->convertMessage($room, $data);
+			$data = $this->fileConverter->convertMessage($room, $participant, $data);
 		}
 
 		return new DataResponse($data, Http::STATUS_OK);
@@ -386,6 +511,7 @@ class ChatController {
 		if (!empty($data)) {
 			/** @var TalkChatMessageWithParent $data */
 			$data = $this->userConverter->convertMessage($room, $data);
+			$data = $this->fileConverter->convertMessage($room, $participant, $data);
 		}
 
 		return new DataResponse($data, Http::STATUS_OK);
@@ -437,6 +563,7 @@ class ChatController {
 		/** @var TalkChatMessageWithParent $data */
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_OK, Http::STATUS_ACCEPTED]);
 		$data = $this->userConverter->convertMessage($room, $data);
+		$data = $this->fileConverter->convertMessage($room, $participant, $data);
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
@@ -488,6 +615,7 @@ class ChatController {
 		/** @var TalkChatMessageWithParent $data */
 		$data = $this->proxy->getOCSData($proxy, [Http::STATUS_OK, Http::STATUS_ACCEPTED]);
 		$data = $this->userConverter->convertMessage($room, $data);
+		$data = $this->fileConverter->convertMessage($room, $participant, $data);
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
@@ -613,5 +741,72 @@ class ChatController {
 
 		// FIXME post-load status information
 		return new DataResponse($data, Http::STATUS_OK);
+	}
+
+	/**
+	 * Search the messages of the conversation on its host, for the unified search of this server
+	 *
+	 * @return list<TalkChatMessage> Matching messages, newest first, with actors as this server knows them. Empty when the
+	 *                               host doesn't answer searches (official Talk or older builds answer 404)
+	 * @throws CannotReachRemoteException
+	 *
+	 * @see \OCA\Talk\Controller\ChatController::searchMessages()
+	 */
+	public function searchMessages(Room $room, Participant $participant, string $term, int $since, int $until, string $actorType, string $actorId, int $offset, int $limit): array {
+		$proxy = $this->proxy->get(
+			$participant->getAttendee()->getInvitedCloudId(),
+			$participant->getAttendee()->getAccessToken(),
+			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v1/chat/' . $room->getRemoteToken() . '/search',
+			[
+				'term' => $term,
+				'since' => $since,
+				'until' => $until,
+				'actorType' => $actorType,
+				'actorId' => $actorId,
+				'offset' => $offset,
+				'limit' => $limit,
+			],
+		);
+
+		if ($proxy->getStatusCode() !== Http::STATUS_OK) {
+			return [];
+		}
+
+		$data = $this->filterValidSearchResults($this->proxy->getOCSData($proxy));
+		// Only the text is shown, so the file parameters don't need resolving to files of this server
+		/** @var list<TalkChatMessage> $data */
+		$data = $this->userConverter->convertMessages($room, $data);
+		return array_values($data);
+	}
+
+	/**
+	 * A malformed answer from the host must not break the search (spec: federated search never fails the whole
+	 * search), so entries that are not arrays, or that lack the keys `searchMessages()` relies on with the right
+	 * basic type, are dropped instead of causing a TypeError further down in `UserConverter::convertMessages()`.
+	 *
+	 * @return list<TalkChatMessage>
+	 */
+	private function filterValidSearchResults(mixed $data): array {
+		if (!is_array($data)) {
+			return [];
+		}
+
+		$messages = [];
+		foreach ($data as $entry) {
+			if (!is_array($entry)
+				|| !is_int($entry['id'] ?? null)
+				|| !is_string($entry['actorType'] ?? null)
+				|| !is_string($entry['actorId'] ?? null)
+				|| !is_string($entry['actorDisplayName'] ?? null)
+				|| !is_int($entry['timestamp'] ?? null)
+				|| !is_string($entry['message'] ?? null)
+				|| !is_array($entry['messageParameters'] ?? null)) {
+				continue;
+			}
+			/** @var TalkChatMessage $entry */
+			$messages[] = $entry;
+		}
+
+		return $messages;
 	}
 }

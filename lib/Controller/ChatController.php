@@ -20,6 +20,9 @@ use OCA\Talk\Config;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\ChatSummaryException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Federation\Attachments\FeatureSupport;
+use OCA\Talk\Federation\Attachments\RemoteFile;
+use OCA\Talk\Federation\Attachments\RemoteShareRegistry;
 use OCA\Talk\GuestManager;
 use OCA\Talk\Manager;
 use OCA\Talk\MatterbridgeManager;
@@ -59,6 +62,7 @@ use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\ApiRoute;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
+use OCP\AppFramework\Http\Attribute\OpenAPI;
 use OCP\AppFramework\Http\Attribute\PublicPage;
 use OCP\AppFramework\Http\Attribute\RequestHeader;
 use OCP\AppFramework\Http\Attribute\UserRateLimit;
@@ -72,6 +76,8 @@ use OCP\Comments\MessageTooLongException;
 use OCP\Comments\NotFoundException;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\FileInfo;
+use OCP\Files\Folder;
+use OCP\Files\Node;
 use OCP\Files\NotEnoughSpaceException;
 use OCP\Files\NotFoundException as FileNotFoundException;
 use OCP\IL10N;
@@ -146,6 +152,8 @@ class ChatController extends AEnvironmentAwareOCSController {
 		private readonly ScheduledMessageService $scheduledMessageManager,
 		private readonly ConversationFolderService $conversationFolderService,
 		private readonly Config $talkConfig,
+		private readonly RemoteShareRegistry $remoteShareRegistry,
+		private readonly FeatureSupport $featureSupport,
 	) {
 		parent::__construct($appName, $request);
 	}
@@ -2278,7 +2286,16 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 * @return array<string, TalkChatMessage>
 	 */
 	protected function getMessagesForRoom(array $messageIds): array {
-		$comments = $this->chatManager->getMessagesForRoomById($this->room, $messageIds);
+		return $this->formatComments($this->chatManager->getMessagesForRoomById($this->room, $messageIds));
+	}
+
+	/**
+	 * The visible messages of the given comments for the current participant, keyed by message id, in the order of the comments
+	 *
+	 * @param IComment[] $comments
+	 * @return array<string, TalkChatMessage>
+	 */
+	protected function formatComments(array $comments): array {
 		$this->sharePreloader->preloadShares($comments);
 		$potentialThreadIds = array_map(static fn (IComment $comment) => (int)$comment->getTopmostParentId() ?: (int)$comment->getId(), $comments);
 		$threads = $this->threadService->findByThreadIds($this->room->getId(), $potentialThreadIds);
@@ -2426,6 +2443,7 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 * with the room, so other participants cannot see in-progress uploads or files
 	 * from aborted messages.  Files are moved into the shared subfolder atomically
 	 * when the attachment endpoint is called.
+	 * In federated conversations the folder stays on this server and is shared with the other participants when a file is posted.
 	 *
 	 * Recommended client flow:
 	 * 1. Call this endpoint to obtain the Draft folder path and predicted final names.
@@ -2442,9 +2460,10 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 *
 	 * 200: Draft folder path and rename map returned
 	 * 500: Could not prepare the conversation folder
-	 * 501: Conversation subfolders feature is disabled
+	 * 501: Conversation subfolders feature is disabled, or files can not be shared in this federated conversation
 	 * 507: User storage quota exceeded
 	 */
+	#[FederationSupported]
 	#[NoAdminRequired]
 	#[RequireModeratorOrNoLobby]
 	#[RequireLoggedInParticipant]
@@ -2461,6 +2480,14 @@ class ChatController extends AEnvironmentAwareOCSController {
 		if (!$this->talkConfig->isConversationSubfoldersEnabled()) {
 			$this->conversationFolderService->ensureAttachmentFolderExists($uid);
 			return new DataResponse(['error' => $this->l->t('Conversation subfolders are disabled')], Http::STATUS_NOT_IMPLEMENTED);
+		}
+
+		if ($this->room->isFederatedConversation()) {
+			if (!$this->federatedAttachmentsAvailable()) {
+				return new DataResponse(['error' => $this->l->t('Files can not be shared in this federated conversation')], Http::STATUS_NOT_IMPLEMENTED);
+			}
+			// Federated shares are read-only
+			$allowUpdate = false;
 		}
 
 		try {
@@ -2501,16 +2528,18 @@ class ChatController extends AEnvironmentAwareOCSController {
 	 * @param string $fileName Desired final file name; the service resolves conflicts
 	 *                         by appending " (1)", " (2)", … if already taken
 	 * @param bool $allowUpdate Allow recipients to modify shared files
-	 * @return DataResponse<Http::STATUS_OK, array{renames: list<array<string, string>>}, array{}>|DataResponse<Http::STATUS_NOT_FOUND|Http::STATUS_UNPROCESSABLE_ENTITY|Http::STATUS_INTERNAL_SERVER_ERROR|Http::STATUS_INSUFFICIENT_STORAGE|Http::STATUS_BAD_REQUEST|Http::STATUS_NOT_IMPLEMENTED, array{error: string}, array{}>
+	 * @return DataResponse<Http::STATUS_OK, array{renames: list<array<string, string>>}, array{}>|DataResponse<Http::STATUS_NOT_FOUND|Http::STATUS_UNPROCESSABLE_ENTITY|Http::STATUS_INTERNAL_SERVER_ERROR|Http::STATUS_INSUFFICIENT_STORAGE|Http::STATUS_BAD_REQUEST|Http::STATUS_FORBIDDEN|Http::STATUS_NOT_IMPLEMENTED, array{error: string}, array{}>
 	 *
 	 * 200: File moved from Draft and posted as chat message
 	 * 400: Path does not point to a file
+	 * 403: Not allowed by the conversation's host (federated conversations)
 	 * 404: File not found
 	 * 422: File is not inside the conversation Draft folder for this room
 	 * 500: Could not prepare the conversation folder
-	 * 501: Conversation subfolders feature is disabled
+	 * 501: Conversation subfolders feature is disabled, or files can not be shared in this federated conversation
 	 * 507: User storage quota exceeded
 	 */
+	#[FederationSupported]
 	#[NoAdminRequired]
 	#[RequireModeratorOrNoLobby]
 	#[RequireLoggedInParticipant]
@@ -2523,6 +2552,14 @@ class ChatController extends AEnvironmentAwareOCSController {
 	public function postAttachmentToRoom(string $filePath, string $referenceId, string $talkMetaData = '', string $fileName = '', bool $allowUpdate = false): DataResponse {
 		if (!$this->talkConfig->isConversationSubfoldersEnabled()) {
 			return new DataResponse(['error' => $this->l->t('Conversation subfolders are disabled')], Http::STATUS_NOT_IMPLEMENTED);
+		}
+
+		if ($this->room->isFederatedConversation()) {
+			if (!$this->federatedAttachmentsAvailable()) {
+				return new DataResponse(['error' => $this->l->t('Files can not be shared in this federated conversation')], Http::STATUS_NOT_IMPLEMENTED);
+			}
+			// Federated shares are read-only
+			$allowUpdate = false;
 		}
 
 		/** @var string $uid — non-null, guaranteed by RequireLoggedInParticipant */
@@ -2566,18 +2603,71 @@ class ChatController extends AEnvironmentAwareOCSController {
 		$renameTo = $result['to'];
 		$node = $result['node'];
 
+		if ($this->room->isFederatedConversation()) {
+			// The conversation is hosted elsewhere: share the folder with the participants there, then the host posts the message
+			/** @var \OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController $proxy */
+			$proxy = \OCP\Server::get(\OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController::class);
+			try {
+				$error = $proxy->postAttachment($this->room, $this->participant, $subfolder, $node, $talkMetaData, $referenceId);
+			} catch (\Throwable $e) {
+				$this->moveBackToDraft($node, $draftFolder, $filePath);
+				throw $e;
+			}
+			if ($error !== null) {
+				$this->moveBackToDraft($node, $draftFolder, $filePath);
+				return $error;
+			}
+			return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
+		}
+
+		// Create the file_shared system message referencing the file by node ID.
+		// The parameters use 'fileId' instead of 'share' so no per-file TYPE_ROOM
+		// share is needed; access is controlled by the folder-level share.
+		$this->postFileMessage(['fileId' => (string)$node->getId()], $node->getMimeType(), $talkMetaData, $referenceId, Attendee::ACTOR_USERS, $uid);
+
+		return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
+	}
+
+	/**
+	 * The host did not post the message: the file must not stay in the sender folder (shared with the other
+	 * participants) without one, and the client posts it again from the Draft folder under its original name
+	 */
+	private function moveBackToDraft(Node $node, Folder $draftFolder, string $filePath): void {
+		try {
+			$node->move($draftFolder->getPath() . '/' . basename($filePath));
+		} catch (\Throwable $e) {
+			$this->logger->warning('Could not move ' . $node->getName() . ' back to the Draft folder after the host did not post it', ['exception' => $e]);
+		}
+	}
+
+	/**
+	 * In a federated conversation the files stay on this server and are shared with the other participants:
+	 * needs direction B on the host (design §8, ruling R10), and not in public conversations (as on the host)
+	 */
+	private function federatedAttachmentsAvailable(): bool {
+		return $this->room->getType() !== Room::TYPE_PUBLIC
+			// Not only talk-attachments-v1: build 24.0.5.1 lists that but has no endpoint for these files (ruling R10)
+			&& $this->featureSupport->remoteSupportsUploads($this->room->getRemoteServer()) === true;
+	}
+
+	/**
+	 * Posts a file_shared message as the current participant, with the options the attachment endpoints take in
+	 * talkMetaData (caption, messageType, silent, replyTo, threadId, threadTitle)
+	 *
+	 * @param array<string, mixed> $parameters How the message references the file ('fileId' or 'federatedFile')
+	 */
+	private function postFileMessage(array $parameters, string $mimeType, string $talkMetaData, string $referenceId, string $actorType, string $actorId): void {
 		// Parse talkMetaData for caption, messageType, silent, replyTo, threadId.
 		$metaData = json_decode($talkMetaData, true);
 		$metaData = is_array($metaData) ? $metaData : [];
 
 		// Validate and sanitize messageType.
 		if (isset($metaData['messageType']) && $metaData['messageType'] === ChatManager::VERB_VOICE_MESSAGE) {
-			$mime = $node->getMimeType();
-			if ($mime !== 'audio/mpeg' && $mime !== 'audio/wav') {
+			if ($mimeType !== 'audio/mpeg' && $mimeType !== 'audio/wav') {
 				unset($metaData['messageType']);
 			}
 		}
-		$metaData['mimeType'] = $node->getMimeType();
+		$metaData['mimeType'] = $mimeType;
 
 		if (isset($metaData['caption'])) {
 			if (is_string($metaData['caption']) && trim($metaData['caption']) !== '') {
@@ -2611,15 +2701,13 @@ class ChatController extends AEnvironmentAwareOCSController {
 
 		$createThread = $replyToId === null && $threadId === Thread::THREAD_NONE && $threadTitle !== '';
 
-		// Create the file_shared system message referencing the file by node ID.
-		// The parameters use 'fileId' instead of 'share' so no per-file TYPE_ROOM
-		// share is needed; access is controlled by the folder-level share.
+		$parameters['metaData'] = $metaData;
 		$comment = $this->chatManager->addSystemMessage(
 			$this->room,
 			$this->participant,
-			Attendee::ACTOR_USERS,
-			$uid,
-			json_encode(['message' => 'file_shared', 'parameters' => ['fileId' => (string)$node->getId(), 'metaData' => $metaData]]),
+			$actorType,
+			$actorId,
+			json_encode(['message' => 'file_shared', 'parameters' => $parameters]),
 			$this->timeFactory->getDateTime(),
 			true,
 			$referenceId !== '' ? $referenceId : null,
@@ -2648,7 +2736,110 @@ class ChatController extends AEnvironmentAwareOCSController {
 				true
 			);
 		}
+	}
 
-		return new DataResponse(['renames' => [[$renameFrom => $renameTo]]], Http::STATUS_OK);
+	/**
+	 * Post a file that a federated participant shared from their own server
+	 *
+	 * Federation only: called by the participant's server after it moved the upload into the participant's
+	 * conversation folder there and shared that folder read-only with the conversation's participants on other
+	 * servers. The file stays on the participant's server.
+	 *
+	 * @param string $folderId Id of the participant's conversation folder on their server
+	 * @param array<string, mixed> $file The file inside that folder: `path` (relative to the folder), `name`, `size`, `mimetype`, `etag`, `fileId`, optional `width`, `height`, `blurhash`
+	 * @param list<array<string, mixed>> $shares The folder's federated shares: `recipient` (cloud id) and `shareId` (id on the participant's server)
+	 * @param string $talkMetaData JSON-encoded metadata (caption, messageType, silent, replyTo, threadId, threadTitle) as for the attachment endpoint
+	 * @param string $referenceId Client-generated reference ID for the message
+	 * @param string $actorDisplayName Display name of the participant
+	 * @return DataResponse<Http::STATUS_CREATED, null, array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: 'federation'|'file'}, array{}>
+	 *
+	 * 201: File message posted
+	 * 400: Not a federated participant with federated attachments, or invalid file details
+	 */
+	#[FederationSupported]
+	#[OpenAPI(scope: OpenAPI::SCOPE_FEDERATION)]
+	#[PublicPage]
+	#[RequireModeratorOrNoLobby]
+	#[RequireParticipant]
+	#[RequirePermission(permission: RequirePermission::CHAT)]
+	#[RequireReadWriteConversation]
+	#[RequestHeader(name: 'x-nextcloud-federation', description: 'Set to 1 when the request is performed by another Nextcloud Server to indicate a federation request', indirect: true)]
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/chat/{token}/federated-attachment', requirements: [
+		'apiVersion' => '(v1)',
+		'token' => '[a-z0-9]{4,30}',
+	])]
+	public function postFederatedAttachment(string $folderId, array $file, array $shares = [], string $talkMetaData = '', string $referenceId = '', string $actorDisplayName = ''): DataResponse {
+		if (!$this->federationAuthenticator->isFederationRequest()
+			|| !$this->federationAuthenticator->supportsFederatedAttachments()
+			|| $this->room->getType() === Room::TYPE_PUBLIC) {
+			return new DataResponse(['error' => 'federation'], Http::STATUS_BAD_REQUEST);
+		}
+
+		// The sender's server is the one that authenticated, never taken from the request body (design §6.1)
+		[$actorType, $actorId] = $this->getActorInfo($actorDisplayName);
+		try {
+			$remoteFile = RemoteFile::fromRequest($actorId, $folderId, $file);
+		} catch (\InvalidArgumentException) {
+			return new DataResponse(['error' => 'file'], Http::STATUS_BAD_REQUEST);
+		}
+
+		$this->remoteShareRegistry->record($this->room, $actorId, $folderId, $shares);
+		$this->postFileMessage(['federatedFile' => $remoteFile], $remoteFile['mimetype'], $talkMetaData, $referenceId, $actorType, $actorId);
+
+		return new DataResponse(null, Http::STATUS_CREATED);
+	}
+
+	/**
+	 * Search the messages of a conversation for a federated participant
+	 *
+	 * Federation only: the participant's server forwards searches in the conversation to this server, which hosts it.
+	 * Users of this server search with the unified search instead.
+	 *
+	 * Required capability: `federated-message-search`
+	 *
+	 * @param string $term Text to search for
+	 * @param int $since Only messages posted since this Unix timestamp (0 for no limit)
+	 * @psalm-param non-negative-int $since
+	 * @param int $until Only messages posted until this Unix timestamp (0 for no limit)
+	 * @psalm-param non-negative-int $until
+	 * @param string $actorType Only messages of this actor type (together with `actorId`)
+	 * @param string $actorId Only messages of this actor (together with `actorType`)
+	 * @param int $offset Number of matching messages to skip
+	 * @psalm-param non-negative-int $offset
+	 * @param int<1, 100> $limit Maximum number of messages
+	 * @return DataResponse<Http::STATUS_OK, list<TalkChatMessage>, array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: 'federation'}, array{}>
+	 *
+	 * 200: Matching messages, newest first
+	 * 400: Not a federation request
+	 */
+	#[FederationSupported]
+	#[OpenAPI(scope: OpenAPI::SCOPE_FEDERATION)]
+	#[PublicPage]
+	#[RequireModeratorOrNoLobby]
+	#[RequireParticipant]
+	#[RequestHeader(name: 'x-nextcloud-federation', description: 'Set to 1 when the request is performed by another Nextcloud Server to indicate a federation request', indirect: true)]
+	#[ApiRoute(verb: 'GET', url: '/api/{apiVersion}/chat/{token}/search', requirements: [
+		'apiVersion' => '(v1)',
+		'token' => '[a-z0-9]{4,30}',
+	])]
+	public function searchMessages(string $term = '', int $since = 0, int $until = 0, string $actorType = '', string $actorId = '', int $offset = 0, int $limit = 25): DataResponse {
+		if (!$this->federationAuthenticator->isFederationRequest()) {
+			return new DataResponse(['error' => 'federation'], Http::STATUS_BAD_REQUEST);
+		}
+
+		$filterByActor = $actorType !== '' && $actorId !== '';
+		$comments = $this->chatManager->searchForObjectsWithFilters(
+			$term,
+			[(string)$this->room->getId()],
+			[ChatManager::VERB_MESSAGE, ChatManager::VERB_OBJECT_SHARED],
+			$since > 0 ? new \DateTimeImmutable('@' . $since) : null,
+			$until > 0 ? new \DateTimeImmutable('@' . $until) : null,
+			$filterByActor ? $actorType : null,
+			$filterByActor ? $actorId : null,
+			max(0, $offset),
+			min(100, max(1, $limit)),
+		);
+
+		return new DataResponse(array_values($this->formatComments($comments)), Http::STATUS_OK);
 	}
 }
