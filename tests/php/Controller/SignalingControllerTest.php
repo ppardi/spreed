@@ -13,8 +13,10 @@ use OCA\Talk\Chat\CommentsManager;
 use OCA\Talk\Config;
 use OCA\Talk\Controller\SignalingController;
 use OCA\Talk\Events\BeforeSignalingResponseSentEvent;
+use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
+use OCA\Talk\Federation\Proxy\TalkV1\Controller\SignalingController as ProxySignalingController;
 use OCA\Talk\Manager;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\AttendeeMapper;
@@ -31,6 +33,7 @@ use OCA\Talk\Signaling\RoomPropertiesHelper;
 use OCA\Talk\TalkSession;
 use OCP\App\IAppManager;
 use OCP\AppFramework\Http;
+use OCP\AppFramework\Http\DataResponse;
 use OCP\AppFramework\Services\IAppConfig;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\Config\IUserConfig;
@@ -377,6 +380,161 @@ class SignalingControllerTest extends TestCase {
 		// "turnservers" is always returned, even if empty
 		$this->assertArrayHasKey('turnservers', $settings);
 		$this->assertSame($expectedTurnServers, $settings['turnservers']);
+	}
+
+	/**
+	 * @param DataResponse|\Throwable $hostSettingsResponse What the host answers, or what asking it throws
+	 */
+	private function setUpFederatedConversation(DataResponse|\Throwable $hostSettingsResponse): void {
+		$this->config = $this->createMock(Config::class);
+		$this->recreateSignalingController();
+		$this->config->method('getTurnSettings')
+			->willReturn([[
+				'schemes' => 'turn',
+				'server' => 'turn.own.example:3478',
+				'username' => 'ownUser',
+				'password' => 'ownPassword',
+				'protocols' => 'udp',
+			]]);
+
+		$room = $this->createMock(Room::class);
+		$room->method('isFederatedConversation')->willReturn(true);
+		$room->method('getRemoteServer')->willReturn('https://host.example');
+		$room->method('getRemoteToken')->willReturn('remotetoken');
+		$this->manager->method('getRoomForUserByToken')
+			->with('localtoken', $this->userId)
+			->willReturn($room);
+		$this->participantService->method('getParticipant')
+			->willReturn($this->createMock(Participant::class));
+
+		$proxy = $this->createMock(ProxySignalingController::class);
+		if ($hostSettingsResponse instanceof \Throwable) {
+			$proxy->method('getSettings')->willThrowException($hostSettingsResponse);
+		} else {
+			$proxy->method('getSettings')->willReturn($hostSettingsResponse);
+		}
+		$this->overwriteService(ProxySignalingController::class, $proxy);
+	}
+
+	public function testGetSettingsFederatedConversationUsesTheTurnServersOfTheHost(): void {
+		$this->setUpFederatedConversation(new DataResponse([
+			'server' => 'https://host.example/standalone-signaling/',
+			'helloAuthParams' => ['2.0' => ['token' => 'host-federation-token']],
+			'turnservers' => [
+				[
+					'urls' => ['turn:turn.host.example:3478?transport=udp', 'turns:turn.host.example:443?transport=tcp'],
+					'username' => 'hostUser',
+					'credential' => 'hostPassword',
+				],
+				// Malformed entries from the host are dropped
+				['urls' => ['https://elsewhere.example/'], 'username' => 'u', 'credential' => 'c'],
+				'not-a-turn-server',
+				['urls' => ['turn:turn2.host.example:3478'], 'username' => 42, 'credential' => 'c'],
+				['urls' => ['turn:turn3.host.example:3478', 42, 'stun:stun.host.example:3478'], 'username' => 'u3', 'credential' => 'c3'],
+				// Malformed URLs are dropped (the browser would reject the whole list)
+				['urls' => ['turn:', 'turn:bad host:3478', 'turn:turn4.host.example:3478?transport=sctp'], 'username' => 'u4', 'credential' => 'c4'],
+				['urls' => ['turn:turn5.host.example:3478'], 'username' => str_repeat('u', 513), 'credential' => 'c5'],
+			],
+		]));
+
+		$settings = $this->controller->getSettings('localtoken')->getData();
+
+		$this->assertSame([
+			[
+				'urls' => ['turn:turn.host.example:3478?transport=udp', 'turns:turn.host.example:443?transport=tcp'],
+				'username' => 'hostUser',
+				'credential' => 'hostPassword',
+			],
+			[
+				'urls' => ['turn:turn3.host.example:3478'],
+				'username' => 'u3',
+				'credential' => 'c3',
+			],
+			[
+				'urls' => ['turn:turn.own.example:3478?transport=udp'],
+				'username' => 'ownUser',
+				'credential' => 'ownPassword',
+			],
+		], $settings['turnservers']);
+		$this->assertSame([
+			'server' => 'https://host.example/standalone-signaling/',
+			'nextcloudServer' => 'https://host.example',
+			'helloAuthParams' => ['token' => 'host-federation-token'],
+			'roomId' => 'remotetoken',
+		], $settings['federation']);
+	}
+
+	public function testGetSettingsFederatedConversationUsesAtMostFiveTurnServersOfTheHost(): void {
+		$hostTurnServers = [];
+		for ($i = 1; $i <= 7; $i++) {
+			$hostTurnServers[] = ['urls' => ['turn:turn' . $i . '.host.example:3478'], 'username' => 'u' . $i, 'credential' => 'c' . $i];
+		}
+		$this->setUpFederatedConversation(new DataResponse([
+			'server' => 'https://host.example/standalone-signaling/',
+			'helloAuthParams' => ['2.0' => ['token' => 'host-federation-token']],
+			'turnservers' => $hostTurnServers,
+		]));
+
+		$settings = $this->controller->getSettings('localtoken')->getData();
+
+		$this->assertSame(
+			['u1', 'u2', 'u3', 'u4', 'u5', 'ownUser'],
+			array_column($settings['turnservers'], 'username'),
+		);
+	}
+
+	public function testGetSettingsFederatedConversationUsesAtMostTenUrlsOfATurnServerOfTheHost(): void {
+		$turnUrls = [];
+		for ($i = 0; $i <= 11; $i++) {
+			$turnUrls[] = 'turn:turn.host.example:' . (3478 + $i);
+		}
+		$this->setUpFederatedConversation(new DataResponse([
+			'server' => 'https://host.example/standalone-signaling/',
+			'helloAuthParams' => ['2.0' => ['token' => 'host-federation-token']],
+			'turnservers' => [
+				['urls' => $turnUrls, 'username' => 'hostUser', 'credential' => 'hostPassword'],
+			],
+		]));
+
+		$settings = $this->controller->getSettings('localtoken')->getData();
+
+		$this->assertSame(array_slice($turnUrls, 0, 10), $settings['turnservers'][0]['urls']);
+	}
+
+	public function testGetSettingsFederatedConversationWithoutSettingsOfTheHost(): void {
+		$this->setUpFederatedConversation(new DataResponse([], Http::STATUS_NOT_FOUND));
+
+		$settings = $this->controller->getSettings('localtoken')->getData();
+
+		$this->assertNull($settings['federation']);
+		$this->assertSame([
+			[
+				'urls' => ['turn:turn.own.example:3478?transport=udp'],
+				'username' => 'ownUser',
+				'credential' => 'ownPassword',
+			],
+		], $settings['turnservers']);
+	}
+
+	/**
+	 * Regression guard for the contract between this endpoint and the rejoin loop of the clients.
+	 *
+	 * _rejoinFederatedRoom() in src/utils/signaling.js tells two outcomes apart when it asks for the settings of a
+	 * federated conversation again:
+	 * - the request fails => the host is probably still unreachable, so try again after the backoff;
+	 * - the request succeeds but carries no federation block => the conversation has no signaling server of its host
+	 *   any more, so give up for good and keep polling the chat.
+	 *
+	 * Catching CannotReachRemoteException here to answer 200 with 'federation' => null therefore turns a recoverable
+	 * host outage into a permanent loss of the relay: the clients make one attempt and then stop retrying. Making this
+	 * endpoint fail is the retry trigger, and it has to stay that way unless _rejoinFederatedRoom() changes with it.
+	 */
+	public function testGetSettingsFederatedConversationPropagatesAnUnreachableHost(): void {
+		$this->setUpFederatedConversation(new CannotReachRemoteException());
+
+		$this->expectException(CannotReachRemoteException::class);
+
+		$this->controller->getSettings('localtoken');
 	}
 
 	public static function dataIsTryingToPublishMedia(): array {

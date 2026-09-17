@@ -50,6 +50,8 @@ let expirationInterval: NodeJS.Timeout | undefined
 let pollingErrorTimeout = 1_000
 let chatRelaySupported: boolean | null = null
 let fallbackPollInterval: NodeJS.Timeout | undefined
+/** Whether the chat context of the current conversation has been loaded (new messages may be polled) */
+let messagesInitialised = false
 
 /**
  * Composable to provide control logic for fetching messages list
@@ -142,6 +144,7 @@ export function useGetMessagesProvider() {
 			if (oldToken && oldToken !== newToken) {
 				store.dispatch('cancelPollNewMessages', { requestId: oldToken })
 				chatRelaySupported = null
+				messagesInitialised = false
 				clearInterval(fallbackPollInterval)
 			}
 
@@ -307,6 +310,8 @@ export function useGetMessagesProvider() {
 	 * @param token token of conversation where a method was called
 	 */
 	async function handleStartGettingMessagesPreconditions(token: string) {
+		messagesInitialised = false
+
 		// prevent sticky mode before we have loaded anything
 		isInitialisingMessages.value = true
 
@@ -348,6 +353,7 @@ export function useGetMessagesProvider() {
 		}
 
 		isInitialisingMessages.value = false
+		messagesInitialised = true
 
 		if (chatRelaySupported !== null) {
 			// Case: chat relay is confirmed to be supported / not supported from signaling hello message,
@@ -612,8 +618,8 @@ export function useGetMessagesProvider() {
 			chatRelaySupported = false
 		}
 
-		if (!pollingTimeout) {
-			// Context request is still ongoing
+		if (!messagesInitialised) {
+			// Context request is still ongoing, polling starts when it is done
 			return
 		}
 		// Once the history and Hello signaling message is received, starts looking for new messages.
