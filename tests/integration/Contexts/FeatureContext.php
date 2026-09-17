@@ -152,6 +152,7 @@ class FeatureContext implements Context {
 
 	use CommandLineTrait;
 	use RecordingTrait;
+	use FederatedAttachmentsTrait;
 
 	public static function getTokenForIdentifier(string $identifier): string {
 		return self::$identifierToToken[$identifier];
@@ -313,7 +314,7 @@ class FeatureContext implements Context {
 		}
 		$this->currentServer = $server;
 
-		$this->sharingContext->setCurrentServer($this->currentServer, $this->localServerUrl);
+		$this->sharingContext->setCurrentServer($this->currentServer, $this->baseUrl);
 	}
 
 	#[Then('/^user "([^"]*)" cannot find any listed rooms \((v4)\)$/')]
@@ -3061,6 +3062,13 @@ class FeatureContext implements Context {
 					$search = trim(preg_replace('/conversation:ROOM\((\w+)\)/', '', $search));
 					$searchUrl .= '&conversation=' . self::$identifierToToken[$matches['name']];
 				}
+			}
+		}
+
+		if (str_contains($search, 'person:USER(')) {
+			if (preg_match('/person:USER\((?P<name>\w+)\)/', $search, $matches)) {
+				$search = trim(preg_replace('/person:USER\((\w+)\)/', '', $search));
+				$searchUrl .= '&person=' . $matches['name'];
 			}
 		}
 

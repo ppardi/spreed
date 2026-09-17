@@ -1281,6 +1281,28 @@ class RoomShareProvider implements IShareProvider, IPartialShareProvider, IShare
 	}
 
 	/**
+	 * Ids of the shares with the conversation (without the per-user child shares)
+	 *
+	 * @return list<int>
+	 */
+	public function getShareIdsInRoom(string $roomToken): array {
+		$qb = $this->dbConnection->getQueryBuilder();
+		$qb->select('id')
+			->from('share')
+			->where($qb->expr()->eq('share_type', $qb->createNamedParameter(IShare::TYPE_ROOM)))
+			->andWhere($qb->expr()->eq('share_with', $qb->createNamedParameter($roomToken)))
+			->orderBy('id', 'ASC');
+
+		$ids = [];
+		$cursor = $qb->executeQuery();
+		while ($row = $cursor->fetchAssociative()) {
+			$ids[] = (int)$row['id'];
+		}
+		$cursor->closeCursor();
+		return $ids;
+	}
+
+	/**
 	 * Delete all received shares for a user in a room
 	 *
 	 * Not part of IShareProvider API, but needed by the hooks in

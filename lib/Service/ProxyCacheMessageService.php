@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace OCA\Talk\Service;
 
 use OCA\Talk\Exceptions\CannotReachRemoteException;
+use OCA\Talk\Federation\Attachments\FileMessageSanitizer;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Model\ProxyCacheMessage;
 use OCA\Talk\Model\ProxyCacheMessageMapper;
@@ -87,8 +88,10 @@ class ProxyCacheMessageService {
 			$proxy->setExpirationDatetime(new \DateTime('@' . $messageData['expirationTimestamp']));
 		}
 		$proxy->setCreationDatetime(new \DateTime('@' . $messageData['timestamp']));
-		$proxy->setMessage($messageData['message']);
-		$proxy->setMessageParameters(json_encode($messageData['messageParameters']));
+		// The cache is shared by all users of this server, so it must not keep one user's local file
+		[$message, $messageParameters] = FileMessageSanitizer::toPlainName($messageData['message'], $messageData['messageParameters']);
+		$proxy->setMessage($message);
+		$proxy->setMessageParameters(json_encode($messageParameters));
 
 		$metaData = [];
 		if (!empty($messageData['lastEditActorType']) && !empty($messageData['lastEditActorId'])) {

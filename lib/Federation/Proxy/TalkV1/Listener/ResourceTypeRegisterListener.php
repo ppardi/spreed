@@ -9,6 +9,7 @@ declare(strict_types=1);
 namespace OCA\Talk\Federation\Proxy\TalkV1\Listener;
 
 use OCA\Talk\Config;
+use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Federation\CloudFederationProviderTalk;
 use OCA\Talk\Federation\FederationManager;
 use OCP\EventDispatcher\Event;
@@ -42,6 +43,8 @@ class ResourceTypeRegisterListener implements IEventListener {
 			$this->talkProvider->getSupportedShareTypes(),
 			[
 				'talk-v1' => '/ocs/v2.php/apps/spreed/api/',
+				FeatureSupport::OCM_PROTOCOL => '/ocs/v2.php/apps/spreed/api/',
+				FeatureSupport::OCM_PROTOCOL_V2 => '/ocs/v2.php/apps/spreed/api/',
 			]
 		);
 	}

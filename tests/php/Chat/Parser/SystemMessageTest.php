@@ -13,6 +13,9 @@ use OCA\Talk\Authenticator;
 use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Chat\Parser\SystemMessage;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Federation\Attachments\RemoteFileRenderer;
+use OCA\Talk\Model\AttachmentShare;
+use OCA\Talk\Model\AttachmentShareMapper;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Model\Session;
@@ -20,6 +23,7 @@ use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Share\Helper\FilesMetadataCache;
+use OCA\Talk\Share\Helper\RoomShareLocator;
 use OCA\Talk\Share\RoomShareProvider;
 use OCP\AppFramework\Services\IAppConfig;
 use OCP\Comments\IComment;
@@ -61,6 +65,8 @@ class SystemMessageTest extends TestCase {
 	protected FilesMetadataCache&MockObject $filesMetadataCache;
 	protected Authenticator&MockObject $federationAuthenticator;
 	protected IEventDispatcher&MockObject $dispatcher;
+	protected AttachmentShareMapper&MockObject $attachmentShareMapper;
+	protected RemoteFileRenderer&MockObject $remoteFileRenderer;
 	protected IL10N&MockObject $l;
 
 	public function setUp(): void {
@@ -80,6 +86,8 @@ class SystemMessageTest extends TestCase {
 		$this->filesMetadataCache = $this->createMock(FilesMetadataCache::class);
 		$this->federationAuthenticator = $this->createMock(Authenticator::class);
 		$this->dispatcher = $this->createMock(IEventDispatcher::class);
+		$this->attachmentShareMapper = $this->createMock(AttachmentShareMapper::class);
+		$this->remoteFileRenderer = $this->createMock(RemoteFileRenderer::class);
 		$this->l = $this->createMock(IL10N::class);
 		$this->l->method('t')
 			->willReturnCallback(fn ($text, $parameters = []) => vsprintf($text, $parameters));
@@ -112,6 +120,9 @@ class SystemMessageTest extends TestCase {
 					$this->filesMetadataCache,
 					$this->federationAuthenticator,
 					$this->dispatcher,
+					new RoomShareLocator($this->shareProvider),
+					$this->attachmentShareMapper,
+					$this->remoteFileRenderer,
 				])
 				->onlyMethods($methods)
 				->getMock();
@@ -133,6 +144,9 @@ class SystemMessageTest extends TestCase {
 			$this->filesMetadataCache,
 			$this->federationAuthenticator,
 			$this->dispatcher,
+			new RoomShareLocator($this->shareProvider),
+			$this->attachmentShareMapper,
+			$this->remoteFileRenderer,
 		);
 	}
 
@@ -1437,6 +1451,196 @@ class SystemMessageTest extends TestCase {
 		$parser = $this->getParser();
 		$this->expectException(NotFoundException::class);
 		self::invokePrivate($parser, 'getFileFromNodeId', [$room, null, 42]);
+	}
+
+	private function createFederatedParticipant(): Participant {
+		$participant = $this->createMock(Participant::class);
+		$participant->method('getAttendee')->willReturn(Attendee::fromRow([
+			'actor_type' => Attendee::ACTOR_FEDERATED_USERS,
+			'actor_id' => 'bill@nc2.test',
+		]));
+		return $participant;
+	}
+
+	public function testGetFileFromNodeIdForFederatedViewerWithoutOptInThrows(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getType')->willReturn(Room::TYPE_GROUP);
+		$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn(false);
+		$this->rootFolder->expects($this->never())->method('getFirstNodeById');
+
+		$this->expectException(ShareNotFound::class);
+		self::invokePrivate($this->getParser(), 'getFileFromNodeId', [$room, $this->createFederatedParticipant(), 187]);
+	}
+
+	public function testGetFileFromNodeIdForFederatedViewerReturnsReference(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getType')->willReturn(Room::TYPE_GROUP);
+		$room->method('getToken')->willReturn('wqhg8fxn');
+		$room->method('getId')->willReturn(12);
+		$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn(true);
+
+		$shareFolder = $this->createMock(Folder::class);
+		$shareFolder->method('getPath')->willReturn('/paul/files/Talk/Room-both-wqhg8fxn');
+		$node = $this->createMock(Node::class);
+		$node->method('getId')->willReturn(187);
+		$node->method('getName')->willReturn('photo1.jpg');
+		$node->method('getSize')->willReturn(314468);
+		$node->method('getEtag')->willReturn('etag1');
+		$node->method('getPermissions')->willReturn(27);
+		$node->method('getMimeType')->willReturn('image/jpeg');
+		$node->method('getParent')->willReturn($shareFolder);
+		$node->method('getPath')->willReturn('/paul/files/Talk/Room-both-wqhg8fxn/photo1.jpg');
+		$this->rootFolder->method('getFirstNodeById')->with(187)->willReturn($node);
+
+		$roomShare = $this->createMock(IShare::class);
+		$roomShare->method('getSharedWith')->willReturn('wqhg8fxn');
+		$roomShare->method('getId')->willReturn('5');
+		$this->shareProvider->method('getSharesByPath')->with($shareFolder)->willReturn([$roomShare]);
+
+		$row = new AttachmentShare();
+		$row->setShareId('6');
+		$this->attachmentShareMapper->expects($this->once())
+			->method('findForRecipient')
+			->with(12, AttachmentShare::SOURCE_ROOM_SHARE, '5', Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test')
+			->willReturn($row);
+
+		$this->previewManager->method('isMimeSupported')->willReturn(true);
+		$this->filesMetadataCache->method('getImageMetadataForFileId')->willReturn(['width' => 1600, 'height' => 1600]);
+		$this->url->method('getAbsoluteURL')->with('/')->willReturn('https://nc1.test/');
+		$this->url->expects($this->never())->method('linkToRouteAbsolute');
+
+		$this->assertSame([
+			'type' => 'federated-file',
+			'name' => 'photo1.jpg',
+			'size' => '314468',
+			'mimetype' => 'image/jpeg',
+			'etag' => 'etag1',
+			'preview-available' => 'yes',
+			'width' => '1600',
+			'height' => '1600',
+			'server' => 'https://nc1.test/',
+			'share-id' => '6',
+			'path' => 'photo1.jpg',
+		], self::invokePrivate($this->getParser(), 'getFileFromNodeId', [$room, $this->createFederatedParticipant(), 187]));
+	}
+
+	public function testGetFileFromNodeIdForFederatedViewerWithoutShareThrows(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getType')->willReturn(Room::TYPE_GROUP);
+		$room->method('getToken')->willReturn('wqhg8fxn');
+		$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn(true);
+
+		$shareFolder = $this->createMock(Folder::class);
+		$shareFolder->method('getPath')->willReturn('/paul/files/Talk/Room-both-wqhg8fxn');
+		$node = $this->createMock(Node::class);
+		$node->method('getParent')->willReturn($shareFolder);
+		$node->method('getPath')->willReturn('/paul/files/Talk/Room-both-wqhg8fxn/photo1.jpg');
+		$this->rootFolder->method('getFirstNodeById')->willReturn($node);
+		$roomShare = $this->createMock(IShare::class);
+		$roomShare->method('getSharedWith')->willReturn('wqhg8fxn');
+		$roomShare->method('getId')->willReturn('5');
+		$this->shareProvider->method('getSharesByPath')->willReturn([$roomShare]);
+		$this->attachmentShareMapper->method('findForRecipient')->willReturn(null);
+
+		$this->expectException(ShareNotFound::class);
+		self::invokePrivate($this->getParser(), 'getFileFromNodeId', [$room, $this->createFederatedParticipant(), 187]);
+	}
+
+	public function testGetFileFromShareForFederatedViewerReturnsReference(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getType')->willReturn(Room::TYPE_GROUP);
+		$room->method('getId')->willReturn(12);
+		$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn(true);
+
+		$node = $this->createMock(Node::class);
+		$node->method('getId')->willReturn(158);
+		$node->method('getName')->willReturn('smoke.png');
+		$node->method('getSize')->willReturn(7855);
+		$node->method('getEtag')->willReturn('etag2');
+		$node->method('getPermissions')->willReturn(27);
+		$node->method('getMimeType')->willReturn('image/png');
+
+		$share = $this->createMock(IShare::class);
+		$share->method('getId')->willReturn('3');
+		$share->method('getNode')->willReturn($node);
+		$this->shareProvider->method('getShareById')->with('3')->willReturn($share);
+
+		$row = new AttachmentShare();
+		$row->setShareId('9');
+		$this->attachmentShareMapper->method('findForRecipient')
+			->with(12, AttachmentShare::SOURCE_ROOM_SHARE, '3', Attendee::ACTOR_FEDERATED_USERS, 'bill@nc2.test')
+			->willReturn($row);
+
+		$this->previewManager->method('isMimeSupported')->willReturn(true);
+		$this->filesMetadataCache->method('getImageMetadataForFileId')->willReturn([]);
+		$this->url->method('getAbsoluteURL')->with('/')->willReturn('https://nc1.test/');
+
+		$result = self::invokePrivate($this->getParser(), 'getFileFromShare', [$room, $this->createFederatedParticipant(), '3', false]);
+		$this->assertSame('federated-file', $result['type']);
+		$this->assertSame('9', $result['share-id']);
+		$this->assertSame('', $result['path']);
+		$this->assertSame('smoke.png', $result['name']);
+		$this->assertArrayNotHasKey('id', $result);
+		$this->assertArrayNotHasKey('link', $result);
+	}
+
+	private function parseFederatedFileMessage(array $parameters): Message {
+		$room = $this->createMock(Room::class);
+		$participant = $this->createMock(Participant::class);
+		$participant->method('isGuest')->willReturn(false);
+		$participant->method('getAttendee')->willReturn(Attendee::fromRow(['actor_type' => Attendee::ACTOR_USERS, 'actor_id' => 'paul']));
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getActorType')->willReturn(Attendee::ACTOR_FEDERATED_USERS);
+		$comment->method('getActorId')->willReturn('bill@nc2.test');
+
+		$parser = $this->getParser(['getActorFromComment']);
+		$parser->method('getActorFromComment')->willReturn(['type' => 'user', 'id' => 'bill', 'name' => 'Bill', 'server' => 'https://nc2.test']);
+
+		$chatMessage = new Message($room, $participant, $comment, $this->l);
+		$chatMessage->setMessage(json_encode(['message' => 'file_shared', 'parameters' => $parameters]), [], 'file_shared');
+		self::invokePrivate($parser, 'parseMessage', [$chatMessage, false]);
+		return $chatMessage;
+	}
+
+	public function testFederatedFileIsRenderedPerViewer(): void {
+		$federatedFile = ['owner' => 'bill@nc2.test', 'folderId' => '42', 'path' => 'photo.png', 'name' => 'photo.png', 'size' => 7855, 'mimetype' => 'image/png', 'etag' => 'e1', 'fileId' => '88'];
+		$this->remoteFileRenderer->expects($this->once())
+			->method('render')
+			->with($this->isInstanceOf(Room::class), $this->isInstanceOf(Participant::class), $federatedFile)
+			->willReturn(['type' => 'file', 'id' => '77']);
+
+		$chatMessage = $this->parseFederatedFileMessage(['federatedFile' => $federatedFile, 'metaData' => ['caption' => 'Look']]);
+
+		$this->assertSame('Look', $chatMessage->getMessage());
+		$this->assertSame(['type' => 'file', 'id' => '77'], $chatMessage->getMessageParameters()['file']);
+		$this->assertSame(ChatManager::VERB_MESSAGE, $chatMessage->getMessageType());
+	}
+
+	public function testUnavailableFederatedFileShowsTheFallback(): void {
+		$this->remoteFileRenderer->method('render')->willThrowException(new NotFoundException());
+
+		$chatMessage = $this->parseFederatedFileMessage(['federatedFile' => ['owner' => 'bill@nc2.test'], 'metaData' => []]);
+
+		// Usually the received share still waits for acceptance, so not "no longer available"
+		$this->assertSame('*{actor} shared a file which is not available yet*', $chatMessage->getMessage());
+		$this->assertArrayNotHasKey('file', $chatMessage->getMessageParameters());
+	}
+
+	public static function dataGetUnavailableFileMessage(): array {
+		return [
+			'actor' => [true, Attendee::ACTOR_USERS, false, 'You shared a file which is no longer available'],
+			'local user' => [false, Attendee::ACTOR_USERS, false, '{actor} shared a file which is no longer available'],
+			'federated viewer, remote not opted in' => [false, Attendee::ACTOR_FEDERATED_USERS, false, 'File shares are currently not supported in federated conversations'],
+			'federated viewer, remote opted in' => [false, Attendee::ACTOR_FEDERATED_USERS, true, '{actor} shared a file which is not available yet'],
+		];
+	}
+
+	#[DataProvider('dataGetUnavailableFileMessage')]
+	public function testGetUnavailableFileMessage(bool $currentUserIsActor, string $currentActorType, bool $optedIn, string $expected): void {
+		$this->federationAuthenticator->method('supportsFederatedAttachments')->willReturn($optedIn);
+		$parser = $this->getParser();
+		self::invokePrivate($parser, 'l', [$this->l]); // normally set by parseMessage()
+		$this->assertSame($expected, self::invokePrivate($parser, 'getUnavailableFileMessage', [$currentUserIsActor, $currentActorType]));
 	}
 
 	public static function dataGetActor(): array {
