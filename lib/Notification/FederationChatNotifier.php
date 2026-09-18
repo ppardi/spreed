@@ -72,10 +72,23 @@ class FederationChatNotifier {
 			}
 		}
 
-		// Also notify default participants in one-to-one chats or when the admin default is "always"
+		// Resolve NOTIFY_DEFAULT before comparing, the way Chat\Notifier and RoomFormatter do.
+		// Comparing it unresolved made every conversation the user never explicitly configured
+		// behave as "@-mentions only": the settings dialog has no control for NOTIFY_DEFAULT and
+		// shows the resolved value instead, so such a conversation displays "All messages" while
+		// storing NOTIFY_DEFAULT, and the user has no way to see why they are not being notified.
 		$defaultLevel = $this->appConfig->getAppValueInt('default_group_notification', Participant::NOTIFY_ALWAYS);
-		if ($notificationLevel === Participant::NOTIFY_MENTION
-			|| ($defaultLevel !== Participant::NOTIFY_NEVER && $notificationLevel === Participant::NOTIFY_DEFAULT)) {
+		if ($notificationLevel === Participant::NOTIFY_DEFAULT) {
+			if ($room->getType() === Room::TYPE_ONE_TO_ONE || $room->getType() === Room::TYPE_ONE_TO_ONE_FORMER) {
+				$notificationLevel = Participant::NOTIFY_ALWAYS;
+			} elseif ($defaultLevel === Participant::NOTIFY_DEFAULT) {
+				$notificationLevel = Participant::NOTIFY_ALWAYS;
+			} else {
+				$notificationLevel = $defaultLevel;
+			}
+		}
+
+		if ($notificationLevel === Participant::NOTIFY_MENTION) {
 			if ($this->isRepliedTo($room, $participant, $metaData)) {
 				$notification = $this->createNotification($room, $message, 'reply', threadId: $threadId);
 				$notification->setUser($participant->getAttendee()->getActorId());
@@ -89,8 +102,7 @@ class FederationChatNotifier {
 				$notification->setUser($participant->getAttendee()->getActorId());
 				$this->notificationManager->notify($notification);
 			}
-		} elseif ($participant->getAttendee()->getNotificationLevel() === Participant::NOTIFY_ALWAYS
-			|| ($defaultLevel === Participant::NOTIFY_ALWAYS && $notificationLevel === Participant::NOTIFY_DEFAULT)) {
+		} elseif ($notificationLevel === Participant::NOTIFY_ALWAYS) {
 			if ($this->isUserMessageOrRelevantSystemMessage($message->getSystemMessage())) {
 				$notification = $this->createNotification($room, $message, 'chat', threadId: $threadId);
 				$notification->setUser($participant->getAttendee()->getActorId());
