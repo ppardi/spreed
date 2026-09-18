@@ -17,12 +17,14 @@ use OCA\Talk\Config as TalkConfig;
 use OCA\Talk\Exceptions\CannotReachRemoteException;
 use OCA\Talk\Exceptions\RemoteClientException;
 use OCA\Talk\Federation\Attachments\FeatureSupport;
+use OCA\Talk\Federation\ReadStatus\ReadPrivacySync;
 use OCA\Talk\Participant;
 use OCA\Talk\Settings\UserPreference;
 use OCP\AppFramework\Http;
 use OCP\Http\Client\IClientService;
 use OCP\Http\Client\IResponse;
 use OCP\IConfig;
+use OCP\IUser;
 use OCP\IUserSession;
 use OCP\L10N\IFactory;
 use Psr\Log\LoggerInterface;
@@ -85,6 +87,8 @@ class ProxyRequest {
 		#[SensitiveParameter]
 		?string $accessToken,
 	): array {
+		$user = $this->userSession->getUser();
+
 		$options = [
 			'verify' => !$this->config->getSystemValueBool('sharing.federation.allowSelfSignedCertificates'),
 			'nextcloud' => [
@@ -94,11 +98,15 @@ class ProxyRequest {
 				'Accept' => 'application/json',
 				'X-Nextcloud-Federation' => 'true',
 				'OCS-APIRequest' => 'true',
-				'Accept-Language' => $this->l10nFactory->getUserLanguage($this->userSession->getUser()),
+				'Accept-Language' => $this->l10nFactory->getUserLanguage($user),
 				FeatureSupport::REQUEST_HEADER => '1',
 			],
 			'timeout' => 5,
 		];
+
+		if ($user instanceof IUser) {
+			$options['headers'][ReadPrivacySync::REQUEST_HEADER] = (string)$this->talkConfig->getUserReadPrivacy($user->getUID());
+		}
 
 		if ($cloudId !== null && $accessToken !== null) {
 			$options['auth'] = [urlencode($cloudId), $accessToken];

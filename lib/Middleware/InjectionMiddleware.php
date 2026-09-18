@@ -15,6 +15,7 @@ use OCA\Talk\Exceptions\ForbiddenException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\PermissionsException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
+use OCA\Talk\Federation\ReadStatus\ReadPrivacySync;
 use OCA\Talk\Manager;
 use OCA\Talk\Middleware\Attribute\AllowWithoutParticipantWhenPendingInvitation;
 use OCA\Talk\Middleware\Attribute\FederationSupported;
@@ -71,6 +72,7 @@ class InjectionMiddleware extends Middleware {
 		private readonly BanService $banService,
 		private readonly RoomService $roomService,
 		private readonly LoggerInterface $logger,
+		private readonly ReadPrivacySync $readPrivacySync,
 		private readonly ?string $userId,
 	) {
 	}
@@ -269,6 +271,7 @@ class InjectionMiddleware extends Middleware {
 
 				// Get and set the participant already, so we don't retry public access
 				$participant = $this->participantService->getParticipantByActor($room, Attendee::ACTOR_FEDERATED_USERS, $this->federationAuthenticator->getCloudId());
+				$this->readPrivacySync->applyFromRequest($participant);
 
 				if ($sessionIdParameter !== null && !$participant->getSession() instanceof Session) {
 					// If a session is required, fail if we didn't find it
