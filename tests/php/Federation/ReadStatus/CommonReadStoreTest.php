@@ -104,6 +104,24 @@ class CommonReadStoreTest extends TestCase {
 		$this->assertSame(10, $participant->getAttendee()->getLastCommonReadMessage());
 	}
 
+	public function testDecreaseToZeroIsWrittenNotDroppedAsFalsy(): void {
+		// The call sites forward the header under `if ($proxy->getHeader(...))`, a PHP
+		// truthiness test that a literal "0" fails - but the host does send "0" (the room
+		// minimum drops to 0 when a participant who has read nothing joins,
+		// ChatController.php:1248 sends it unconditionally). remember() itself must not
+		// share that truthiness bug: it only checks for the empty string.
+		$participant = $this->participantWith(42);
+		$response = $this->responseWithHeader('0');
+
+		$this->participantService->expects($this->once())
+			->method('updateLastCommonReadMessage')
+			->with($participant, 0);
+
+		$this->store->remember($participant, $response);
+
+		$this->assertSame(0, $participant->getAttendee()->getLastCommonReadMessage());
+	}
+
 	public function testUnreadFirstMessageSentinelIsStoredNotRejected(): void {
 		// setReadMarker(0) resolves to ChatManager::UNREAD_FIRST_MESSAGE (-2) on the host; the
 		// frontend's `lastCommonReadMessage >= message.id` is then false for every message,
