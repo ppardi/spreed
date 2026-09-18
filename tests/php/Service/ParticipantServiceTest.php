@@ -128,6 +128,35 @@ class ParticipantServiceTest extends TestCase {
 		self::assertCount(1, $participants);
 	}
 
+	public function testUpdateLastCommonReadMessageBumpsAttendeeActivity(): void {
+		$attendee = new Attendee();
+		$attendee->setActorType(Attendee::ACTOR_FEDERATED_USERS);
+		$attendee->setActorId('commonread-test@remote.tld');
+		$attendee->setRoomId(123456790);
+		$attendee->setLastCommonReadMessage(0);
+		$attendee->setLastAttendeeActivity(0);
+		$this->attendeeMapper->insert($attendee);
+
+		$this->time->method('getTime')->willReturn(1234567890);
+
+		$room = $this->createMock(Room::class);
+		$participant = new Participant($room, $attendee, null);
+
+		try {
+			$this->service->updateLastCommonReadMessage($participant, 42);
+
+			$stored = $this->attendeeMapper->findByActor(123456790, Attendee::ACTOR_FEDERATED_USERS, 'commonread-test@remote.tld');
+			$this->assertSame(42, $stored->getLastCommonReadMessage());
+			// getLastAttendeeActivity() is the only signal RoomController::getListedRoomsForUser()'s
+			// modifiedSince filter (RoomController.php:290) has for "this attendee's view of the
+			// room changed" - without the bump, a federated conversation whose only change is the
+			// host's common read marker would be silently dropped from delta room-list refreshes.
+			$this->assertSame(1234567890, $stored->getLastAttendeeActivity());
+		} finally {
+			$this->attendeeMapper->delete($attendee);
+		}
+	}
+
 	public function testInviteEmailAddressThrowsForClassifiedRoom(): void {
 		$room = $this->createMock(Room::class);
 		$room->method('isClassified')

@@ -354,6 +354,7 @@ class ParticipantService {
 	public function updateLastCommonReadMessage(Participant $participant, int $messageId): void {
 		$attendee = $participant->getAttendee();
 		$attendee->setLastCommonReadMessage($messageId);
+		$attendee->setLastAttendeeActivity($this->timeFactory->getTime());
 		$this->attendeeMapper->update($attendee);
 	}
 

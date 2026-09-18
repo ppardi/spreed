@@ -34,6 +34,7 @@ class CommonReadStoreTest extends TestCase {
 		$attendee->setActorType(Attendee::ACTOR_FEDERATED_USERS);
 		$attendee->setActorId('user@remote.test');
 		$attendee->setLastCommonReadMessage($lastCommonReadMessage);
+		$attendee->setLastAttendeeActivity(111);
 
 		$room = $this->createMock(Room::class);
 		return new Participant($room, $attendee, null);
@@ -64,11 +65,15 @@ class CommonReadStoreTest extends TestCase {
 		$participant = $this->participantWith(42);
 		$response = $this->responseWithHeader('42');
 
+		// Never called at all, not called-with-no-effect: ParticipantService::updateLastCommonReadMessage()
+		// also bumps lastAttendeeActivity, so a spurious call here would show up as a moved
+		// timestamp even though the marker value itself didn't change.
 		$this->participantService->expects($this->never())->method('updateLastCommonReadMessage');
 
 		$this->store->remember($participant, $response);
 
 		$this->assertSame(42, $participant->getAttendee()->getLastCommonReadMessage());
+		$this->assertSame(111, $participant->getAttendee()->getLastAttendeeActivity());
 	}
 
 	public function testMissingHeaderIsANoOp(): void {
