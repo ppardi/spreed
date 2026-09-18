@@ -15,6 +15,7 @@ use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Proxy\TalkV1\Controller\ChatController;
 use OCA\Talk\Federation\Proxy\TalkV1\ProxyRequest;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
+use OCA\Talk\Federation\ReadStatus\CommonReadStore;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
@@ -83,6 +84,7 @@ class ChatControllerTest extends TestCase {
 			$cacheFactory,
 			$this->sharer,
 			$this->metadataCache,
+			$this->createMock(CommonReadStore::class),
 		);
 	}
 

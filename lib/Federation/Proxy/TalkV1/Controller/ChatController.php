@@ -16,6 +16,7 @@ use OCA\Talk\Federation\Attachments\AttachmentSharer;
 use OCA\Talk\Federation\Attachments\FederatedFileConverter;
 use OCA\Talk\Federation\Proxy\TalkV1\ProxyRequest;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
+use OCA\Talk\Federation\ReadStatus\CommonReadStore;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\ResponseDefinitions;
@@ -50,6 +51,7 @@ class ChatController {
 		ICacheFactory $cacheFactory,
 		private readonly AttachmentSharer $attachmentSharer,
 		private readonly FilesMetadataCache $metadataCache,
+		private readonly CommonReadStore $commonReadStore,
 	) {
 		$this->proxyCacheMessages = $cacheFactory->isAvailable() ? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PCM) : null;
 	}
@@ -108,6 +110,7 @@ class ChatController {
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$headers['X-Chat-Last-Common-Read'] = (string)(int)$proxy->getHeader('X-Chat-Last-Common-Read');
 		}
 
@@ -307,6 +310,7 @@ class ChatController {
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$headers['X-Chat-Last-Common-Read'] = (string)(int)$proxy->getHeader('X-Chat-Last-Common-Read');
 		}
 		if ($proxy->getHeader('X-Chat-Last-Given')) {
@@ -357,6 +361,7 @@ class ChatController {
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$headers['X-Chat-Last-Common-Read'] = (string)(int)$proxy->getHeader('X-Chat-Last-Common-Read');
 		}
 		if ($proxy->getHeader('X-Chat-Last-Given')) {
@@ -567,6 +572,7 @@ class ChatController {
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$headers['X-Chat-Last-Common-Read'] = (string)(int)$proxy->getHeader('X-Chat-Last-Common-Read');
 		}
 
@@ -619,6 +625,7 @@ class ChatController {
 
 		$headers = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$headers['X-Chat-Last-Common-Read'] = (string)(int)$proxy->getHeader('X-Chat-Last-Common-Read');
 		}
 
@@ -661,6 +668,7 @@ class ChatController {
 
 		$headers = $lastCommonRead = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$lastCommonRead[$room->getId()] = (int)$proxy->getHeader('X-Chat-Last-Common-Read');
 			$headers['X-Chat-Last-Common-Read'] = (string)$lastCommonRead[$room->getId()];
 		}
@@ -702,6 +710,7 @@ class ChatController {
 
 		$headers = $lastCommonRead = [];
 		if ($proxy->getHeader('X-Chat-Last-Common-Read')) {
+			$this->commonReadStore->remember($participant, $proxy);
 			$lastCommonRead[$room->getId()] = (int)$proxy->getHeader('X-Chat-Last-Common-Read');
 			$headers['X-Chat-Last-Common-Read'] = (string)$lastCommonRead[$room->getId()];
 		}

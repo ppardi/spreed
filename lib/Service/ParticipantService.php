@@ -351,6 +351,12 @@ class ParticipantService {
 		$this->attendeeMapper->update($attendee);
 	}
 
+	public function updateLastCommonReadMessage(Participant $participant, int $messageId): void {
+		$attendee = $participant->getAttendee();
+		$attendee->setLastCommonReadMessage($messageId);
+		$this->attendeeMapper->update($attendee);
+	}
+
 	public function updateUnreadInfoForProxyParticipant(Participant $participant, int $unreadMessageCount, bool $hasMention, bool $hadDirectMention, int $lastReadMessageId): void {
 		$attendee = $participant->getAttendee();
 		$attendee->setUnreadMessages($unreadMessageCount);

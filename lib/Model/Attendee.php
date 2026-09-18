@@ -33,6 +33,8 @@ use OCP\DB\Types;
  * @method int getLastJoinedCall()
  * @method void setLastReadMessage(int $lastReadMessage)
  * @method int getLastReadMessage()
+ * @method void setLastCommonReadMessage(int $lastCommonReadMessage)
+ * @method int getLastCommonReadMessage()
  * @method void setLastMentionMessage(int $lastMentionMessage)
  * @method int getLastMentionMessage()
  * @method void setLastMentionDirect(int $lastMentionDirect)
@@ -135,6 +137,7 @@ class Attendee extends Entity {
 	protected bool $sensitive = false;
 	protected int $lastJoinedCall = 0;
 	protected int $lastReadMessage = 0;
+	protected int $lastCommonReadMessage = 0;
 	protected int $lastMentionMessage = 0;
 	protected int $lastMentionDirect = 0;
 	protected int $readPrivacy = 0;
@@ -169,6 +172,7 @@ class Attendee extends Entity {
 		$this->addType('notificationCalls', Types::INTEGER);
 		$this->addType('lastJoinedCall', Types::INTEGER);
 		$this->addType('lastReadMessage', Types::INTEGER);
+		$this->addType('lastCommonReadMessage', Types::INTEGER);
 		$this->addType('lastMentionMessage', Types::INTEGER);
 		$this->addType('lastMentionDirect', Types::BIGINT);
 		$this->addType('readPrivacy', Types::SMALLINT);
