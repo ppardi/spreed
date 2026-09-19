@@ -130,7 +130,7 @@ class ParticipantServiceTest extends TestCase {
 
 	public function testUpdateLastCommonReadMessageBumpsAttendeeActivity(): void {
 		$attendee = new Attendee();
-		$attendee->setActorType(Attendee::ACTOR_FEDERATED_USERS);
+		$attendee->setActorType(Attendee::ACTOR_USERS);
 		$attendee->setActorId('commonread-test@remote.tld');
 		$attendee->setRoomId(123456790);
 		$attendee->setLastCommonReadMessage(0);
@@ -145,7 +145,7 @@ class ParticipantServiceTest extends TestCase {
 		try {
 			$this->service->updateLastCommonReadMessage($participant, 42);
 
-			$stored = $this->attendeeMapper->findByActor(123456790, Attendee::ACTOR_FEDERATED_USERS, 'commonread-test@remote.tld');
+			$stored = $this->attendeeMapper->findByActor(123456790, Attendee::ACTOR_USERS, 'commonread-test@remote.tld');
 			$this->assertSame(42, $stored->getLastCommonReadMessage());
 			// getLastAttendeeActivity() is the only signal RoomController::getListedRoomsForUser()'s
 			// modifiedSince filter (RoomController.php:290) has for "this attendee's view of the

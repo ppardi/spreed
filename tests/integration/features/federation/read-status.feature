@@ -122,7 +122,9 @@ Feature: federation/read-status
     Then last response has last common read message header set to "Message 2"
 
     # The marker must be able to fall again, or the "read by everyone" tick would stay on a
-    # message nobody has read any more (CommonReadStore is last-write-wins for this reason)
+    # message nobody has read any more. Marking the room unread on the remote side resets
+    # participant2's last_read_message on the host, so the host's live minimum (computed by
+    # ParticipantService::getLastCommonReadChatMessage()) follows it back down.
     Given using server "REMOTE"
     When user "participant2" marks room "LOCAL::room" as unread with 200
     Given using server "LOCAL"

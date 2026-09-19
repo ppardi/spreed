@@ -31,7 +31,7 @@ class CommonReadStoreTest extends TestCase {
 
 	private function participantWith(int $lastCommonReadMessage): Participant {
 		$attendee = new Attendee();
-		$attendee->setActorType(Attendee::ACTOR_FEDERATED_USERS);
+		$attendee->setActorType(Attendee::ACTOR_USERS);
 		$attendee->setActorId('user@remote.test');
 		$attendee->setLastCommonReadMessage($lastCommonReadMessage);
 		$attendee->setLastAttendeeActivity(111);
