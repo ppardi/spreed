@@ -594,6 +594,9 @@ class FeatureContext implements Context {
 				if (isset($expectedRoom['lastReadMessage'])) {
 					$data['lastReadMessage'] = self::$messageIdToText[(int)$room['lastReadMessage']] ?? ($room['lastReadMessage'] === -2 ? 'FIRST_MESSAGE_UNREAD': 'UNKNOWN_MESSAGE');
 				}
+				if (isset($expectedRoom['lastCommonReadMessage'])) {
+					$data['lastCommonReadMessage'] = self::$messageIdToText[(int)$room['lastCommonReadMessage']] ?? 'UNKNOWN_MESSAGE';
+				}
 				if (isset($expectedRoom['unreadMessages'])) {
 					$data['unreadMessages'] = (int)$room['unreadMessages'];
 				}

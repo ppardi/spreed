@@ -142,6 +142,7 @@ class Capabilities implements IPublicCapability {
 		'federated-attachments',
 		'federated-attachments-upload',
 		'federated-message-search',
+		'federated-read-status',
 	];
 
 	public const CONDITIONAL_FEATURES = [

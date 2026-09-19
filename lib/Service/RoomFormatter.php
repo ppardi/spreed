@@ -435,7 +435,13 @@ class RoomFormatter {
 				$roomData['lastMessage'] = $lastMessageData;
 			}
 		} elseif ($room->isFederatedConversation()) {
-			$roomData['lastCommonReadMessage'] = 0;
+			// Only the host can compute this: our attendee list for a proxy room is just us, so
+			// ChatManager::getLastCommonReadMessage() would return our own read marker (upstream ec2ce3b97)
+			// and $commonReadMessages holds exactly that locally computed value for a proxy room.
+			// CommonReadStore keeps what the host last told us; never fall back to either of the above.
+			$roomData['lastCommonReadMessage'] = $attendee->getReadPrivacy() === Participant::PRIVACY_PUBLIC
+				? $attendee->getLastCommonReadMessage()
+				: 0;
 			try {
 				$cachedMessage = $this->pcmService->findByRemote(
 					$room->getRemoteServer(),

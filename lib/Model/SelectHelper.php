@@ -93,6 +93,7 @@ class SelectHelper {
 			$alias . 'notification_calls',
 			$alias . 'last_joined_call',
 			$alias . 'last_read_message',
+			$alias . 'last_common_read_message',
 			$alias . 'last_mention_message',
 			$alias . 'last_mention_direct',
 			$alias . 'read_privacy',
