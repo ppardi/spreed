@@ -28,6 +28,7 @@ import MentionChip from './MessagePart/MentionChip.vue'
 import router from '../../../../__mocks__/router.js'
 import * as useIsInCallModule from '../../../../composables/useIsInCall.js'
 import { ATTENDEE, CONVERSATION, MESSAGE, PARTICIPANT } from '../../../../constants.ts'
+import { hasTalkFeature } from '../../../../services/CapabilitiesManager.ts'
 import { EventBus } from '../../../../services/EventBus.ts'
 import storeConfig from '../../../../store/storeConfig.js'
 import { useActorStore } from '../../../../stores/actor.ts'
@@ -47,6 +48,12 @@ vi.mock('vuex', async () => {
 vi.mock('@vueuse/router', () => ({
 	useRouteParams: vi.fn(() => ref('XXTOKENXX')),
 	useRouteQuery: vi.fn(),
+}))
+
+vi.mock('../../../../services/CapabilitiesManager.ts', async (importOriginal) => ({
+	...(await importOriginal()),
+	// Default to supported so the existing 'threads' and 'react-permission' lookups keep working
+	hasTalkFeature: vi.fn(() => true),
 }))
 
 describe('MessageItem.vue', () => {
@@ -621,6 +628,10 @@ describe('MessageItem.vue', () => {
 			store = createStore(testStoreConfig)
 		})
 
+		afterEach(() => {
+			vi.mocked(hasTalkFeature).mockImplementation(() => true)
+		})
+
 		test('lets user retry sending a timed out message', async () => {
 			messageProps.message.sendingFailure = 'timeout'
 			const wrapper = mountMessage(messageProps)
@@ -678,6 +689,25 @@ describe('MessageItem.vue', () => {
 
 			expect(wrapper.findComponent(IconCheck).exists()).toBe(false)
 			expect(wrapper.findComponent(IconCheckAll).exists()).toBe(false)
+		})
+
+		test('displays the read icon in a federated conversation when the host counts federated participants', () => {
+			conversationProps.remoteServer = 'remote.example.tld'
+			conversationProps.lastCommonReadMessage = 123
+			const wrapper = mountMessage(messageProps)
+
+			expect(wrapper.findComponent(IconCheckAll).exists()).toBe(true)
+		})
+
+		test('hides the read icon in a federated conversation when the host does not support it', () => {
+			conversationProps.remoteServer = 'remote.example.tld'
+			conversationProps.lastCommonReadMessage = 123
+			vi.mocked(hasTalkFeature).mockImplementation((token, feature) => feature !== 'federated-read-status')
+			const wrapper = mountMessage(messageProps)
+
+			// Without the capability the host's marker ignores federated participants, so it would over-report
+			expect(wrapper.findComponent(IconCheckAll).exists()).toBe(false)
+			expect(wrapper.findComponent(IconCheck).exists()).toBe(true)
 		})
 	})
 })

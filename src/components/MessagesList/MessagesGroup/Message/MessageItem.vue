@@ -208,6 +208,8 @@ export default {
 		showCommonReadIcon() {
 			return this.conversation.lastCommonReadMessage >= this.message.id
 				&& this.showSentIcon && !this.isDeletedMessage
+				// The host's marker only means "everyone" when it counts federated attendees too
+				&& (!this.conversation.remoteServer || hasTalkFeature(this.message.token, 'federated-read-status'))
 		},
 
 		showSentIcon() {
