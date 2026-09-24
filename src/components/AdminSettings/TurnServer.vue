@@ -15,8 +15,7 @@
 			:clearable="false"
 			:searchable="false"
 			label="label"
-			trackBy="value"
-			noWrap />
+			trackBy="value" />
 
 		<NcTextField
 			ref="turn_server"
@@ -49,8 +48,7 @@
 			:clearable="false"
 			:searchable="false"
 			label="label"
-			trackBy="value"
-			noWrap />
+			trackBy="value" />
 
 		<NcButton
 			v-show="!loading"
@@ -82,7 +80,6 @@ import { t } from '@nextcloud/l10n'
 import Base64 from 'crypto-js/enc-base64.js'
 import hmacSHA1 from 'crypto-js/hmac-sha1.js'
 import debounce from 'debounce'
-import webrtcSupport from 'webrtcsupport'
 import NcButton from '@nextcloud/vue/components/NcButton'
 import NcLoadingIcon from '@nextcloud/vue/components/NcLoadingIcon'
 import NcPasswordField from '@nextcloud/vue/components/NcPasswordField'
@@ -306,7 +303,7 @@ export default {
 			pc.onicegatheringstatechange = this.gatheringStateChange.bind(this, pc, candidates, timeout)
 
 			// This test will always fail without a data channel on Safari
-			if (webrtcSupport.supportDataChannel) {
+			if ('createDataChannel' in RTCPeerConnection.prototype) {
 				pc.createDataChannel('status')
 			}
 
@@ -436,8 +433,10 @@ export default {
 		}
 	}
 
-	& &__select {
-		margin-block-start: 6px;
+	// Override NcSelect styles
+	// two selects here are short and should be in in line with input fields
+	& :deep(.nc-select.turn-server__select) {
+		margin-block: 6px 0;
 		min-width: unset;
 	}
 }
