@@ -311,6 +311,9 @@ export function useGetMessagesProvider() {
 	 */
 	async function handleStartGettingMessagesPreconditions(token: string) {
 		messagesInitialised = false
+		// The id last returned by the server is from an earlier visit of this conversation: polling from there would fill a
+		// block of older messages instead of the one shown, so new messages would not appear until it caught up
+		chatStore.clearLastServerResponseId(token)
 
 		// prevent sticky mode before we have loaded anything
 		isInitialisingMessages.value = true

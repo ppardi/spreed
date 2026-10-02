@@ -297,6 +297,15 @@ export const useChatStore = defineStore('chat', () => {
 	}
 
 	/**
+	 * Forgets the last message id returned from server response, so that the next poll starts from the last known message
+	 *
+	 * @param token
+	 */
+	function clearLastServerResponseId(token: string) {
+		delete lastGivenByServerMap[token]
+	}
+
+	/**
 	 * Returns nearest known message id, belonging to current context
 	 *
 	 * @param token
@@ -626,6 +635,7 @@ export const useChatStore = defineStore('chat', () => {
 		getLastKnownId,
 		getLastServerResponseId,
 		setLastServerResponseId,
+		clearLastServerResponseId,
 		getNearestKnownContextId,
 		processChatBlocks,
 		addMessageToChatBlocks,

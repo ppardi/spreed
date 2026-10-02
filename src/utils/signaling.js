@@ -682,6 +682,17 @@ function Standalone(settings, urls) {
 	this._federatedRejoinPending = false
 	this._federatedRejoinAttempts = 0
 	this._federatedRejoinGeneration = 0
+	// Whether the page is being unloaded. The browser then closes the socket with 1001 "Going Away" and the connection
+	// must not be established again; a proxy going away (e.g. a reloaded reverse proxy) sends the same code, though.
+	this._pageIsGoingAway = false
+	this._onPageHide = () => {
+		this._pageIsGoingAway = true
+	}
+	this._onPageShow = () => {
+		this._pageIsGoingAway = false
+	}
+	window.addEventListener('pagehide', this._onPageHide)
+	window.addEventListener('pageshow', this._onPageShow)
 	this.connect()
 	Signaling.Base.prototype._trigger.call(this, 'settingsUpdated', [settings])
 }
@@ -789,11 +800,12 @@ Signaling.Standalone.prototype.connect = function() {
 			this.signalingConnectionWarning.hideToast()
 			this.signalingConnectionWarning = null
 		}
-		if (event.code === 1001 && this.signalingConnectionError !== null) {
+		const isClosedByPageUnload = event.code === 1001 && this._pageIsGoingAway
+		if (isClosedByPageUnload && this.signalingConnectionError !== null) {
 			this.signalingConnectionError.hideToast()
 			this.signalingConnectionError = null
 		}
-		if (this.socket && event.code !== 1001) {
+		if (this.socket && !isClosedByPageUnload) {
 			console.debug('Reconnecting socket as the connection was closed unexpected')
 			this.reconnect()
 		}
@@ -932,6 +944,8 @@ Signaling.Standalone.prototype.sendBye = function() {
 }
 
 Signaling.Standalone.prototype.disconnect = function() {
+	window.removeEventListener('pagehide', this._onPageHide)
+	window.removeEventListener('pageshow', this._onPageShow)
 	this.federationLinkInterrupted = false
 	this._resetFederatedRejoin()
 	this.sendBye()
