@@ -16,6 +16,7 @@ use OCA\Talk\Events\BeforeRoomDeletedEvent;
 use OCA\Talk\Events\ChatMessageSentEvent;
 use OCA\Talk\Events\GuestsCleanedUpEvent;
 use OCA\Talk\Events\LobbyModifiedEvent;
+use OCA\Talk\Events\ReactionAddedEvent;
 use OCA\Talk\Events\RoomModifiedEvent;
 use OCA\Talk\Events\SystemMessageSentEvent;
 use OCA\Talk\Events\SystemMessagesMultipleSentEvent;
@@ -424,6 +425,49 @@ class ListenerTest extends TestCase {
 		$this->listener->handle($event);
 	}
 
+	/**
+	 * Reacting to a message relays the reacted-to message as the reaction's `parent`, rendered with
+	 * the same null participant. For a federated file that parent carries the unresolvable id-less
+	 * reference, so a client that already held a good copy of the message overwrites it and the
+	 * attachment degrades to a bare file name until something forces a refetch.
+	 */
+	public function testReactionToAFederatedFileRelaysRefreshOnly(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getId')->willReturn(1);
+		$room->method('getToken')->willReturn('tok');
+		$reactedTo = $this->createMock(IComment::class);
+		$reactedTo->method('getTopmostParentId')->willReturn(null);
+		$reactedTo->method('getId')->willReturn(123);
+		$reactedTo->method('getReactions')->willReturn([]);
+
+		$fileMessage = $this->createConfiguredMock(Message::class, [
+			'getVisibility' => true,
+			'toArray' => ['id' => 123],
+			'getMessageId' => 123,
+			'getMessageParameters' => [
+				'file' => FederatedFileReference::forDisplay(['name' => 'photo.jpg'], 'https://nc1.test'),
+			],
+		]);
+		$l10n = $this->createStub(IL10N::class);
+
+		$event = new ReactionAddedEvent($room, $reactedTo, 'users', 'paulp', 'Paul Pardi', '👍');
+
+		$this->l10nFactory->method('get')->willReturn($l10n);
+		$this->messageParser->method('createMessage')->willReturn($fileMessage);
+		$this->messageParser->expects($this->once())->method('parseMessage')->with($fileMessage);
+
+		$this->backendNotifier->expects($this->once())
+			->method('sendRoomMessage')
+			->with($room, [
+				'type' => 'chat',
+				'chat' => [
+					'refresh' => true,
+				],
+			]);
+
+		$this->listener->handle($event);
+	}
+
 	public function testChatMessageSentWithThreadEvent(): void {
 		$room = $this->createMock(Room::class);
 		$room->method('getId')->willReturn(1);
@@ -488,6 +532,59 @@ class ListenerTest extends TestCase {
 			$comment,
 			skipLastActivityUpdate: false
 		);
+
+		$this->backendNotifier->expects($this->once())
+			->method('sendRoomMessage')
+			->with($room, [
+				'type' => 'chat',
+				'chat' => [
+					'refresh' => true,
+				],
+			]);
+
+		$this->listener->handle($event);
+	}
+
+	/**
+	 * A system message about a federated file message — an edit or a delete, say — relays that
+	 * message as its parent, rendered without a viewer, so it carries the same unresolvable
+	 * reference and would overwrite a client's good copy.
+	 */
+	public function testSystemMessageWhoseParentIsAFederatedFileRelaysRefreshOnly(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getId')->willReturn(1);
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getVerb')->willReturn(ChatManager::VERB_SYSTEM);
+		$comment->method('getMessage')->willReturn(json_encode(['message' => 'message_edited']));
+		$comment->method('getId')->willReturn(124);
+		$comment->method('getTopmostParentId')->willReturn(null);
+		$parentComment = $this->createMock(IComment::class);
+		$parentComment->method('getId')->willReturn(123);
+
+		$systemMessage = $this->createConfiguredMock(Message::class, [
+			'getVisibility' => true,
+			'toArray' => ['id' => 124],
+			'getMessageId' => 124,
+			'getMessageType' => 'system',
+			'getMessageRaw' => 'message_edited',
+			'getMessageParameters' => [],
+		]);
+		$quotedFileMessage = $this->createConfiguredMock(Message::class, [
+			'getVisibility' => true,
+			'toArray' => ['id' => 123],
+			'getMessageId' => 123,
+			'getMessageParameters' => [
+				'file' => FederatedFileReference::forDisplay(['name' => 'photo.jpg'], 'https://nc1.test'),
+			],
+		]);
+		$l10n = $this->createStub(IL10N::class);
+
+		$event = new SystemMessageSentEvent($room, $comment, parent: $parentComment, skipLastActivityUpdate: false);
+
+		$this->l10nFactory->method('get')->willReturn($l10n);
+		$this->messageParser->method('createMessage')
+			->willReturnCallback(static fn (Room $r, $p, IComment $c, $l): Message
+				=> $c->getId() === 123 ? $quotedFileMessage : $systemMessage);
 
 		$this->backendNotifier->expects($this->once())
 			->method('sendRoomMessage')

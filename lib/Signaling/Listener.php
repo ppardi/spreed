@@ -674,6 +674,17 @@ class Listener implements IEventListener {
 		if ($parent !== null) {
 			$parentMessage = $this->messageParser->createMessage($event->getRoom(), null, $parent, $l10n);
 			$this->messageParser->parseMessage($parentMessage);
+
+			if (FederatedFileReference::isInParameters($parentMessage->getMessageParameters())) {
+				// Same as above: the quoted parent carries the unresolvable reference, so this goes to
+				// the API rather than overwriting a client's resolved copy of that message.
+				$this->externalSignaling->sendRoomMessage($room, [
+					'type' => 'chat',
+					'chat' => ['refresh' => true],
+				]);
+				return;
+			}
+
 			$data['chat']['comment']['parent'] = $parentMessage->toArray('json', $thread);
 		}
 
@@ -718,6 +729,16 @@ class Listener implements IEventListener {
 		$l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
 		$message = $this->messageParser->createMessage($event->getRoom(), null, $comment, $l10n);
 		$this->messageParser->parseMessage($message);
+
+		if (FederatedFileReference::isInParameters($message->getMessageParameters())) {
+			// The reacted-to message is relayed below as the reaction's parent, rendered without a
+			// viewer, so for a federated file it carries the id-less reference no client can resolve.
+			// A client that already holds a good copy of that message would overwrite it and lose the
+			// attachment, so the reaction goes to the API instead.
+			$this->externalSignaling->sendRoomMessage($room, $data);
+			return;
+		}
+
 		// Build reaction message data
 		$data['chat']['comment'] = [
 			'id' => $event->getReactionMessage()?->getId(),
