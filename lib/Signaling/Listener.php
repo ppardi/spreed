@@ -40,6 +40,7 @@ use OCA\Talk\Events\SessionLeftRoomEvent;
 use OCA\Talk\Events\SystemMessageSentEvent;
 use OCA\Talk\Events\SystemMessagesMultipleSentEvent;
 use OCA\Talk\Events\UserJoinedRoomEvent;
+use OCA\Talk\Federation\Attachments\FederatedFileReference;
 use OCA\Talk\Manager;
 use OCA\Talk\Model\BreakoutRoom;
 use OCA\Talk\Model\Message;
@@ -522,6 +523,17 @@ class Listener implements IEventListener {
 			return;
 		}
 
+		if (FederatedFileReference::isInParameters($message->getMessageParameters())) {
+			// One payload is broadcast to every participant, so a federated file can only be rendered
+			// without a viewer, as the id-less reference of FederatedFileReference::forDisplay() that
+			// no client can resolve into a file (design ruling R6). Clients store what the relay gives
+			// them and never refetch a message they already know, so relaying it would permanently
+			// hide the attachment for whoever had the conversation open. Refreshing instead sends them
+			// to the API, where the file is resolved for that viewer.
+			$this->externalSignaling->sendRoomMessage($room, $data);
+			return;
+		}
+
 		$threadId = (int)$comment->getTopmostParentId() ?: $comment->getId();
 		try {
 			$thread = $this->threadService->findByThreadId($room->getId(), (int)$threadId);
@@ -535,6 +547,17 @@ class Listener implements IEventListener {
 		if ($parent !== null) {
 			$parentMessage = $this->messageParser->createMessage($event->getRoom(), null, $parent, $l10n);
 			$this->messageParser->parseMessage($parentMessage);
+
+			if (FederatedFileReference::isInParameters($parentMessage->getMessageParameters())) {
+				// The quoted message carries the same unresolvable reference as above, so the reply
+				// goes to the API too rather than being relayed with a quote that has lost its file.
+				$this->externalSignaling->sendRoomMessage($room, [
+					'type' => 'chat',
+					'chat' => ['refresh' => true],
+				]);
+				return;
+			}
+
 			if ($parent->getVerb() === ChatManager::VERB_PRIVATE_REPLY && $parent->getParentId() === '0') {
 				$metaData = $parent->getMetaData() ?? [];
 				$parentSnapshot = $metaData['originalMessage'];
@@ -588,6 +611,17 @@ class Listener implements IEventListener {
 		$message = $this->messageParser->createMessage($event->getRoom(), null, $comment, $l10n);
 		$this->messageParser->parseMessage($message);
 		if ($message->getVisibility() === false) {
+			$this->externalSignaling->sendRoomMessage($room, $data);
+			return;
+		}
+
+		if (FederatedFileReference::isInParameters($message->getMessageParameters())) {
+			// One payload is broadcast to every participant, so a federated file can only be rendered
+			// without a viewer, as the id-less reference of FederatedFileReference::forDisplay() that
+			// no client can resolve into a file (design ruling R6). Clients store what the relay gives
+			// them and never refetch a message they already know, so relaying it would permanently
+			// hide the attachment for whoever had the conversation open. Refreshing instead sends them
+			// to the API, where the file is resolved for that viewer.
 			$this->externalSignaling->sendRoomMessage($room, $data);
 			return;
 		}

@@ -19,6 +19,7 @@ use OCA\Talk\Events\LobbyModifiedEvent;
 use OCA\Talk\Events\RoomModifiedEvent;
 use OCA\Talk\Events\SystemMessageSentEvent;
 use OCA\Talk\Events\SystemMessagesMultipleSentEvent;
+use OCA\Talk\Federation\Attachments\FederatedFileReference;
 use OCA\Talk\Manager;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Model\Thread;
@@ -319,6 +320,104 @@ class ListenerTest extends TestCase {
 						'id' => 123,
 						'lastCommonRead' => 0,
 					],
+				],
+			]);
+
+		$this->listener->handle($event);
+	}
+
+	/**
+	 * A relayed payload is one broadcast for every participant, so a federated file message can only
+	 * carry the id-less `forDisplay()` reference, which no client can turn into a file: iOS finds no
+	 * parameter of type `file` and renders the caption with no attachment at all, and because the
+	 * client stores what it is given and never refetches a known message, that is permanent for
+	 * whoever had the conversation open. Those recipients are sent to the API instead.
+	 */
+	public function testChatMessageWithAFederatedFileRelaysRefreshOnly(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getId')->willReturn(1);
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getTopmostParentId')->willReturn(null);
+		$comment->method('getVerb')->willReturn(ChatManager::VERB_MESSAGE);
+		$comment->method('getId')->willReturn(1);
+		$message = $this->createConfiguredMock(Message::class, [
+			'getVisibility' => true,
+			'toArray' => ['id' => 123],
+			'getMessageId' => 123,
+			'getMessageParameters' => [
+				'actor' => ['type' => 'user', 'id' => 'paulp', 'name' => 'Paul Pardi'],
+				'file' => FederatedFileReference::forDisplay(
+					['name' => 'photo.jpg', 'size' => '168296', 'mimetype' => 'image/jpeg'],
+					'https://nc1.test',
+				),
+			],
+		]);
+		$l10n = $this->createStub(IL10N::class);
+
+		$event = new ChatMessageSentEvent($room, $comment);
+
+		$this->l10nFactory->expects($this->once())->method('get')->willReturn($l10n);
+		$this->messageParser->expects($this->once())->method('createMessage')
+			->with($room, null, $comment, $l10n)->willReturn($message);
+		$this->messageParser->expects($this->once())->method('parseMessage')->with($message);
+
+		$this->backendNotifier->expects($this->once())
+			->method('sendRoomMessage')
+			->with($room, [
+				'type' => 'chat',
+				'chat' => [
+					'refresh' => true,
+				],
+			]);
+
+		$this->listener->handle($event);
+	}
+
+	/**
+	 * Replying to a federated file message relays the quoted parent as well, which carries the same
+	 * unresolvable reference, so the quote is sent to the API too rather than relayed without its file.
+	 */
+	public function testReplyToAFederatedFileRelaysRefreshOnly(): void {
+		$room = $this->createMock(Room::class);
+		$room->method('getId')->willReturn(1);
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getTopmostParentId')->willReturn(null);
+		$comment->method('getVerb')->willReturn(ChatManager::VERB_MESSAGE);
+		$comment->method('getId')->willReturn(2);
+		$parentComment = $this->createMock(IComment::class);
+		$parentComment->method('getVerb')->willReturn(ChatManager::VERB_MESSAGE);
+		$parentComment->method('getId')->willReturn(1);
+		$parentComment->method('getParentId')->willReturn('0');
+
+		$reply = $this->createConfiguredMock(Message::class, [
+			'getVisibility' => true,
+			'toArray' => ['id' => 124],
+			'getMessageId' => 124,
+			'getMessageParameters' => [],
+		]);
+		$quotedFileMessage = $this->createConfiguredMock(Message::class, [
+			'getVisibility' => true,
+			'toArray' => ['id' => 123],
+			'getMessageId' => 123,
+			'getMessageParameters' => [
+				'file' => FederatedFileReference::forDisplay(['name' => 'photo.jpg'], 'https://nc1.test'),
+			],
+		]);
+		$l10n = $this->createStub(IL10N::class);
+
+		$event = new ChatMessageSentEvent($room, $comment, null, false, $parentComment);
+
+		$this->l10nFactory->method('get')->willReturn($l10n);
+		$this->messageParser->method('createMessage')
+			->willReturnCallback(static fn (Room $r, $p, IComment $c, $l): Message
+				=> $c->getId() === 1 ? $quotedFileMessage : $reply);
+
+		$this->backendNotifier->expects($this->once())
+			->method('sendRoomMessage')
+			->with($room, [
+				'type' => 'chat',
+				'chat' => [
+					'refresh' => true,
 				],
 			]);
 

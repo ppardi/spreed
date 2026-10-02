@@ -62,6 +62,24 @@ final class FederatedFileReference {
 		return $reference;
 	}
 
+	/**
+	 * Whether a parsed message carries a reference of any shape, including the id-less one from
+	 * {@see self::forDisplay()}, which {@see self::isReference()} rejects. A broadcast payload (the
+	 * signaling relay) is rendered without a participant and so can only carry that variant, which
+	 * no client can resolve into a file: callers use this to send those recipients to the API
+	 * instead, where the file resolves per viewer.
+	 *
+	 * @param array<array-key, mixed> $messageParameters
+	 */
+	public static function isInParameters(array $messageParameters): bool {
+		foreach ($messageParameters as $parameter) {
+			if (is_array($parameter) && ($parameter['type'] ?? null) === self::TYPE) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public static function isReference(mixed $parameter): bool {
 		return is_array($parameter)
 			&& ($parameter['type'] ?? null) === self::TYPE

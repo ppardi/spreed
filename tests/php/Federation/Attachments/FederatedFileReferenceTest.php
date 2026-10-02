@@ -74,4 +74,42 @@ class FederatedFileReferenceTest extends TestCase {
 		], $reference);
 		$this->assertFalse(FederatedFileReference::isReference($reference));
 	}
+
+	/**
+	 * The signaling relay broadcasts one payload to every participant, so the reference it carries
+	 * is the id-less `forDisplay()` variant that no client can resolve. `isReference()` rejects that
+	 * variant for having no ids, so detection has to go by type alone.
+	 */
+	public function testIsInParametersFindsTheUnresolvableDisplayVariant(): void {
+		$parameters = [
+			'actor' => ['type' => 'user', 'id' => 'paulp', 'name' => 'Paul'],
+			'file' => FederatedFileReference::forDisplay(['name' => 'photo.png', 'size' => '7855'], 'https://nc2.test'),
+		];
+
+		$this->assertFalse(FederatedFileReference::isReference($parameters['file']),
+			'guard against the display variant ever becoming resolvable without this test being revisited');
+		$this->assertTrue(FederatedFileReference::isInParameters($parameters));
+	}
+
+	public function testIsInParametersFindsAResolvableReference(): void {
+		$parameters = [
+			'file' => FederatedFileReference::forOwnFile(['name' => 'photo.png'], 'https://nc2.test', '87514'),
+		];
+
+		$this->assertTrue(FederatedFileReference::isInParameters($parameters));
+	}
+
+	public function testIsInParametersIgnoresAnOrdinaryFile(): void {
+		$parameters = [
+			'actor' => ['type' => 'user', 'id' => 'paulp', 'name' => 'Paul'],
+			'file' => ['type' => 'file', 'id' => '87514', 'name' => 'photo.png'],
+		];
+
+		$this->assertFalse(FederatedFileReference::isInParameters($parameters));
+		$this->assertFalse(FederatedFileReference::isInParameters([]));
+	}
+
+	public function testIsInParametersSurvivesMalformedParameters(): void {
+		$this->assertFalse(FederatedFileReference::isInParameters(['file' => 'not-an-array', 'other' => 7]));
+	}
 }
