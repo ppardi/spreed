@@ -1324,6 +1324,32 @@ class FeatureContext implements Context {
 		self::$tokenToIdentifier[$response['token']] = $identifier;
 	}
 
+	/**
+	 * The share page answers with a 303 redirect to the password form when
+	 * the share is not authenticated.
+	 */
+	#[Then('/^user "([^"]*)" opens the share page of last share with (\d+)$/')]
+	public function userOpensSharePageOfLastShare(string $user, int $statusCode): void {
+		$shareToken = $this->sharingContext->getLastShareToken();
+
+		$this->setCurrentUser($user);
+		$this->sendRequestFullUrl('GET', $this->baseUrl . 'index.php/s/' . $shareToken, options: ['allow_redirects' => false]);
+		$this->assertStatusCode($this->response, $statusCode);
+	}
+
+	/**
+	 * Only works for guests, as basic auth credentials are interpreted as
+	 * share token and password by the public DAV endpoint.
+	 */
+	#[Then('/^user "([^"]*)" downloads last share via public DAV with (\d+)$/')]
+	public function userDownloadsLastShareViaPublicDav(string $user, int $statusCode): void {
+		$shareToken = $this->sharingContext->getLastShareToken();
+
+		$this->setCurrentUser($user);
+		$this->sendRequestFullUrl('GET', $this->baseUrl . 'public.php/dav/files/' . $shareToken);
+		$this->assertStatusCode($this->response, $statusCode);
+	}
+
 	#[Then('/^user "([^"]*)" creates the password request room for last share with (\d+) \((v1)\)$/')]
 	public function userCreatesThePasswordRequestRoomForLastShare(string $user, int $statusCode, string $apiVersion): void {
 		$shareToken = $this->sharingContext->getLastShareToken();
@@ -1844,11 +1870,12 @@ class FeatureContext implements Context {
 	}
 
 	#[Then('/^user "([^"]*)" makes room "([^"]*)" (public|private) with (\d+) \((v4)\)$/')]
-	public function userChangesTypeOfTheRoom(string $user, string $identifier, string $newType, int $statusCode, string $apiVersion): void {
+	public function userChangesTypeOfTheRoom(string $user, string $identifier, string $newType, int $statusCode, string $apiVersion, ?TableNode $formData = null): void {
 		$this->setCurrentUser($user);
 		$this->sendRequest(
 			$newType === 'public' ? 'POST' : 'DELETE',
-			'/apps/spreed/api/' . $apiVersion . '/room/' . self::$identifierToToken[$identifier] . '/public'
+			'/apps/spreed/api/' . $apiVersion . '/room/' . self::$identifierToToken[$identifier] . '/public',
+			$formData
 		);
 		$this->assertStatusCode($this->response, $statusCode);
 	}
@@ -2925,6 +2952,23 @@ class FeatureContext implements Context {
 		$this->assertStatusCode($this->response, $statusCode);
 	}
 
+	#[Then('/^user "([^"]*)" resolves reference to message "([^"]*)" in room "([^"]*)" with (\d+)$/')]
+	public function userResolvesReferenceToMessage(string $user, string $message, string $identifier, int $statusCode, TableNode $formData): void {
+		$this->setCurrentUser($user);
+		$reference = $this->baseUrl . 'index.php/call/' . self::$identifierToToken[$identifier] . '#message_' . self::$textToMessageId[$message];
+		$this->sendRequest('GET', '/references/resolve?reference=' . urlencode($reference));
+		$this->assertStatusCode($this->response, $statusCode);
+
+		$data = $this->getDataFromResponse($this->response);
+		$resolved = $data['references'][$reference];
+		$actual = [
+			'title' => $resolved['openGraphObject']['name'],
+			'description' => $resolved['openGraphObject']['description'],
+			'message-id' => isset($resolved['richObject']['message-id']) ? (self::$messageIdToText[(int)$resolved['richObject']['message-id']] ?? 'UNKNOWN_MESSAGE') : '',
+		];
+		Assert::assertEquals($formData->getRowsHash(), $actual);
+	}
+
 	#[Then('/^user "([^"]*)" deletes chat history for room "([^"]*)" with (\d+)(?: \((v1)\))?$/')]
 	public function userDeletesHistoryFromRoom(string $user, string $identifier, int $statusCode, string $apiVersion = 'v1'): void {
 		$this->setCurrentUser($user);
@@ -3066,6 +3110,10 @@ class FeatureContext implements Context {
 					$searchUrl .= '&conversation=' . self::$identifierToToken[$matches['name']];
 				}
 			}
+		}
+		if (preg_match('/person:(?P<user>\w+)/', $search, $matches)) {
+			$search = trim(preg_replace('/person:\w+/', '', $search));
+			$searchUrl .= '&person=' . $matches['user'];
 		}
 
 		if (str_contains($search, 'person:USER(')) {
