@@ -52,7 +52,7 @@ Feature: chat-4/search
       | title                    | subline    | attributes.conversation | attributes.threadId | attributes.messageId |
       | participant2-displayname | Thread 1-1 | room1                   | Thread 1            | Thread 1-1           |
       | participant1-displayname | Thread 1   | room1                   | Thread 1            | Thread 1             |
-    When user "participant2" searches for messages with "person:USER(participant2) read" in room "room1" with 200
+    When user "participant2" searches for messages with "person:participant2 read" in room "room1" with 200
       | title                    | subline    | attributes.conversation | attributes.threadId | attributes.messageId |
       | participant2-displayname | Thread 1-1 | room1                   | Thread 1            | Thread 1-1           |
 

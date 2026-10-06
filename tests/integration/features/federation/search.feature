@@ -39,7 +39,7 @@ Feature: federation/search
       | title                    | subline        | attributes.conversation | attributes.messageId |
       | participant1-displayname | Something else | LOCAL::room             | Something else       |
     # "From" filter: the remote server sends participant2's cloud id, the host filters on the actor it stores for them
-    When user "participant2" searches for messages with "person:USER(participant2) essa" in room "LOCAL::room" with 200
+    When user "participant2" searches for messages with "person:participant2 essa" in room "LOCAL::room" with 200
       | title                    | subline   | attributes.conversation | attributes.messageId |
       | participant2-displayname | Message 2 | LOCAL::room             | Message 2            |
     When user "participant2" searches for messages with "zzzz" in room "LOCAL::room" with 200
