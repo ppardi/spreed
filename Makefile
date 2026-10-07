@@ -89,6 +89,8 @@ appstore:
 	--exclude=mkdocs.yml \
 	--exclude=Makefile \
 	--exclude=node_modules \
+	--exclude=.npm-cache \
+	--exclude=.superpowers \
 	--exclude=.patches \
 	--exclude=.php-cs-fixer.cache \
 	--exclude=.php-cs-fixer.dist.php \
