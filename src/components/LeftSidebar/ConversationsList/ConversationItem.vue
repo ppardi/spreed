@@ -36,6 +36,10 @@
 				:size="compact ? AVATAR.SIZE.COMPACT : AVATAR.SIZE.DEFAULT" />
 		</template>
 		<template #name>
+			<span
+				v-if="!!item.unreadMessages"
+				class="conversation__unread-dot"
+				aria-hidden="true" />
 			<template v-if="compact && iconType">
 				<component
 					:is="iconType.component"
@@ -767,6 +771,22 @@ export default {
 }
 
 .conversation {
+	// An unread conversation is otherwise only bold, and in a group conversation with no mention
+	// the counter renders in its plainest form (see counterType in useConversationInfo), so the
+	// bold row is the whole signal. This is the mark you catch while scanning the list.
+	// Deliberately a fixed orange rather than a theme color: the theme is what everything else in
+	// the sidebar already is, so a themed dot would blend into it.
+	&__unread-dot {
+		display: inline-block;
+		flex: 0 0 auto;
+		inline-size: 8px;
+		block-size: 8px;
+		border-radius: 50%;
+		background-color: #ff8c00;
+		margin-inline-end: 6px;
+		vertical-align: middle;
+	}
+
 	// Overwrite ConversationIcon styles to blend a type icon with NcListItem
 	& :deep(.list-item:hover .conversation-icon__type) {
 		background-color: var(--color-background-hover);

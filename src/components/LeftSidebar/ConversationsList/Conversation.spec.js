@@ -100,6 +100,68 @@ describe('ConversationItem.vue', () => {
 		vi.clearAllMocks()
 	})
 
+	describe('unread indicator', () => {
+		// Presence only: component styles are not applied under jsdom, so this cannot prove the dot
+		// is painted or that it is orange. That check is a real browser against a running server.
+		beforeEach(() => {
+			compact = false
+		})
+
+		// `compact` is module state shared by every test in this file, and the mount helper reads it.
+		// Without this, the compact case below leaks into everything that runs after it.
+		afterEach(() => {
+			compact = false
+		})
+
+		test('marks a conversation that has unread messages', () => {
+			item.unreadMessages = 3
+
+			const wrapper = mountConversation()
+
+			expect(wrapper.find('.conversation__unread-dot').exists()).toBe(true)
+		})
+
+		test('leaves a fully read conversation unmarked', () => {
+			item.unreadMessages = 0
+
+			const wrapper = mountConversation()
+
+			expect(wrapper.find('.conversation__unread-dot').exists()).toBe(false)
+		})
+
+		test('marks a group conversation with no mention, which is the quiet case', () => {
+			// The reason this exists: with no mention the counter renders as the plain kind, so the
+			// only signal left is the bold row. That is the state that is easy to miss.
+			item.unreadMessages = 1
+			item.unreadMention = false
+			item.unreadMentionDirect = false
+
+			const wrapper = mountConversation()
+
+			expect(wrapper.findComponent(NcListItem).props('counterType')).toBe('')
+			expect(wrapper.find('.conversation__unread-dot').exists()).toBe(true)
+		})
+
+		test('marks a muted conversation too', () => {
+			// Muting controls notifications, not whether you can see that something arrived.
+			item.unreadMessages = 2
+			item.notificationLevel = PARTICIPANT.NOTIFY.NEVER
+
+			const wrapper = mountConversation()
+
+			expect(wrapper.find('.conversation__unread-dot').exists()).toBe(true)
+		})
+
+		test('marks a conversation in the compact layout', () => {
+			item.unreadMessages = 2
+			compact = true
+
+			const wrapper = mountConversation()
+
+			expect(wrapper.find('.conversation__unread-dot').exists()).toBe(true)
+		})
+	})
+
 	test('renders conversation entry', () => {
 		const wrapper = mountConversation(false)
 
