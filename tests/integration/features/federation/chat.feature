@@ -650,3 +650,51 @@ Feature: federation/chat
     Then user "participant2" is participant of the following rooms (v4)
       | id          | type | lastPinnedId | hiddenPinnedId |
       | LOCAL::room | 2    | EMPTY        | EMPTY          |
+
+  Scenario: Editing a message to add a mention notifies the federated participant
+    Given user "participant1" creates room "room" (v4)
+      | roomType | 3 |
+      | roomName | room |
+    And user "participant1" adds federated_user "participant2" to room "room" with 200 (v4)
+    Given using server "REMOTE"
+    And user "participant2" has the following invitations (v1)
+      | remoteServerUrl | remoteToken | state | inviterCloudId     | inviterDisplayName       |
+      | LOCAL           | room        | 0     | participant1@LOCAL | participant1-displayname |
+    And user "participant2" accepts invite to room "room" of server "LOCAL" with 200 (v1)
+      | id          | name | type | remoteServer | remoteToken |
+      | LOCAL::room | room | 3    | LOCAL        | room        |
+    And user "participant2" sets notifications to mention for room "LOCAL::room" (v4)
+    Given using server "LOCAL"
+    And user "participant1" sends message "Message 1" to room "room" with 201
+    Given using server "REMOTE"
+    Then user "participant2" has the following notifications
+    Given using server "LOCAL"
+    When user "participant1" edits message "Message 1" in room "room" to 'Hi @"federated_user/participant2@{$REMOTE_URL}" bye' with 200
+    Given using server "REMOTE"
+    Then user "participant2" has the following notifications
+      | app    | object_type | object_id                                                       | subject                                                     |
+      | spreed | chat        | LOCAL::room/Hi @"federated_user/participant2@{$REMOTE_URL}" bye | participant1-displayname mentioned you in conversation room |
+
+  Scenario: A silent message is announced to a federated participant by its first edit
+    Given user "participant1" creates room "room" (v4)
+      | roomType | 3 |
+      | roomName | room |
+    And user "participant1" adds federated_user "participant2" to room "room" with 200 (v4)
+    Given using server "REMOTE"
+    And user "participant2" has the following invitations (v1)
+      | remoteServerUrl | remoteToken | state | inviterCloudId     | inviterDisplayName       |
+      | LOCAL           | room        | 0     | participant1@LOCAL | participant1-displayname |
+    And user "participant2" accepts invite to room "room" of server "LOCAL" with 200 (v1)
+      | id          | name | type | remoteServer | remoteToken |
+      | LOCAL::room | room | 3    | LOCAL        | room        |
+    And user "participant2" sets notifications to all for room "LOCAL::room" (v4)
+    Given using server "LOCAL"
+    And user "participant1" silent sends message "Working on it" to room "room" with 201
+    Given using server "REMOTE"
+    Then user "participant2" has the following notifications
+    Given using server "LOCAL"
+    When user "participant1" edits message "Working on it" in room "room" to "Here is the answer" with 200
+    Given using server "REMOTE"
+    Then user "participant2" has the following notifications
+      | app    | object_type | object_id                      | subject                                                      |
+      | spreed | chat        | LOCAL::room/Here is the answer | participant1-displayname sent a message in conversation room |

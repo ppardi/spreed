@@ -21,6 +21,9 @@ use OCP\AppFramework\Services\IAppConfig;
 use OCP\Notification\IManager;
 use OCP\Notification\INotification;
 
+/**
+ * @psalm-type TalkFederatedMetaData = array{silent?: bool, last_edited_time?: int, last_edited_by_type?: string, last_edited_by_id?: string, replyToActorType?: string, replyToActorId?: string, replyToMessageId?: int, thread_id?: int}
+ */
 class FederationChatNotifier {
 	public function __construct(
 		private readonly IAppConfig $appConfig,
@@ -43,7 +46,7 @@ class FederationChatNotifier {
 			return;
 		}
 
-		/** @var array{silent?: bool, last_edited_time?: int, last_edited_by_type?: string, last_edited_by_id?: string, replyToActorType?: string, replyToActorId?: string, thread_id?: int} $metaData */
+		/** @var TalkFederatedMetaData $metaData */
 		$metaData = json_decode($inboundNotification['messageData']['metaData'] ?? '', true, flags: JSON_THROW_ON_ERROR);
 
 		if (isset($metaData[Message::METADATA_SILENT])) {
@@ -51,14 +54,95 @@ class FederationChatNotifier {
 			return;
 		}
 
-		$threadId = null;
-		if (isset($metaData[Message::METADATA_THREAD_ID])) {
-			$threadId = (int)$metaData[Message::METADATA_THREAD_ID];
+		if ($participant->getSession() instanceof Session && $participant->getSession()->getState() === Session::STATE_ACTIVE) {
+			// User has an active session
+			return;
+		}
+
+		$this->notifyAccordingToLevel($room, $participant, $message, $metaData);
+	}
+
+	/**
+	 * An edit is delivered as a `message_edited` SYSTEM message, but what we notify about is the
+	 * edited message itself, which is an ordinary chat message. That is why this is a separate
+	 * entry point rather than a flag on handleChatMessage(): that method is driven by the inbound
+	 * payload, and conflating the two is how the system-message guard came to swallow edits.
+	 *
+	 * The caller has already read the PREVIOUS cached copy, because syncRemoteMessage() rebuilds
+	 * the metadata from scratch and keeps only the silent and last_edited_* keys.
+	 *
+	 * $wasMentionedBefore says whether the participant was mentioned in the previous version: it
+	 * is the federated equivalent of ChatManager::editMessage()'s $addedMentions. $isFirstEdit
+	 * says whether the previous copy carried no last_edited_time. $previousMetaData carries that
+	 * copy's replyTo* and thread_id, which the re-sync drops; it must NOT be taken from the
+	 * inbound payload, because for an edit those point at the edited message itself, so
+	 * isRepliedTo() would be asking "did I write the message that was edited?" and would notify
+	 * the author about their own answer.
+	 *
+	 * @param TalkFederatedMetaData $previousMetaData
+	 */
+	public function handleEditedChatMessage(
+		Room $room,
+		Participant $participant,
+		ProxyCacheMessage $message,
+		bool $wasMentionedBefore,
+		bool $isFirstEdit,
+		array $previousMetaData,
+	): void {
+		if ($message->getSystemMessage()) {
+			return;
+		}
+
+		$metaData = $message->getParsedMetaData();
+
+		// Do not notify whoever made the edit. This is the EDITOR, who is not necessarily the
+		// author: a moderator can edit someone else's message.
+		$editedByType = $metaData[Message::METADATA_LAST_EDITED_BY_TYPE] ?? $message->getActorType();
+		$editedById = $metaData[Message::METADATA_LAST_EDITED_BY_ID] ?? $message->getActorId();
+		if ($participant->getAttendee()->getActorType() === $editedByType
+			&& $participant->getAttendee()->getActorId() === $editedById) {
+			return;
 		}
 
 		if ($participant->getSession() instanceof Session && $participant->getSession()->getState() === Session::STATE_ACTIVE) {
 			// User has an active session
 			return;
+		}
+
+		if (isset($metaData[Message::METADATA_SILENT])) {
+			// `silent` means "do not notify on send", not "never notify about this message": a
+			// silent message is announced by its FIRST edit, which is the edit that turns a
+			// "working on it" placeholder into the answer. Later edits stay quiet, so a typo fix
+			// does not notify again. The ordinary rules below then apply, because from the
+			// recipient's point of view this message is arriving for the first time - and the
+			// answer usually mentions nobody, so isRepliedTo() is what carries it.
+			if (!$isFirstEdit) {
+				return;
+			}
+		} elseif ($wasMentionedBefore || !$this->isMentioned($participant, $message)) {
+			// A non-silent message already notified when it was sent, so only a NEWLY added
+			// mention justifies notifying again. This precondition is also what keeps the
+			// NOTIFY_ALWAYS branch below from pinging every always-notify participant on every
+			// typo correction.
+			return;
+		}
+
+		$this->notifyAccordingToLevel($room, $participant, $message, $previousMetaData);
+	}
+
+	/**
+	 * Applies the recipient's notification level to a message. Shared by handleChatMessage() and
+	 * handleEditedChatMessage() so the two can never drift apart.
+	 *
+	 * $contextMetaData is the metadata carrying replyTo* and thread_id. For a new message that is
+	 * the inbound payload's; for an edit it is the previous cached copy's.
+	 *
+	 * @param TalkFederatedMetaData $contextMetaData
+	 */
+	protected function notifyAccordingToLevel(Room $room, Participant $participant, ProxyCacheMessage $message, array $contextMetaData): void {
+		$threadId = null;
+		if (isset($contextMetaData[Message::METADATA_THREAD_ID])) {
+			$threadId = (int)$contextMetaData[Message::METADATA_THREAD_ID];
 		}
 
 		$notificationLevel = $participant->getAttendee()->getNotificationLevel();
@@ -89,7 +173,7 @@ class FederationChatNotifier {
 		}
 
 		if ($notificationLevel === Participant::NOTIFY_MENTION) {
-			if ($this->isRepliedTo($room, $participant, $metaData)) {
+			if ($this->isRepliedTo($room, $participant, $contextMetaData)) {
 				$notification = $this->createNotification($room, $message, 'reply', threadId: $threadId);
 				$notification->setUser($participant->getAttendee()->getActorId());
 				$this->notificationManager->notify($notification);
@@ -112,7 +196,7 @@ class FederationChatNotifier {
 	}
 
 	/**
-	 * @param array{silent?: bool, last_edited_time?: int, last_edited_by_type?: string, last_edited_by_id?: string, replyToActorType?: string, replyToActorId?: string, thread_id?: int} $metaData
+	 * @param TalkFederatedMetaData $metaData
 	 */
 	protected function isRepliedTo(Room $room, Participant $participant, array $metaData): bool {
 		if (!isset($metaData[ProxyCacheMessage::METADATA_REPLY_TO_ACTOR_TYPE])
@@ -126,7 +210,7 @@ class FederationChatNotifier {
 			&& $repliedTo['id'] === $participant->getAttendee()->getActorId();
 	}
 
-	protected function isMentioned(Participant $participant, ProxyCacheMessage $message): bool {
+	public function isMentioned(Participant $participant, ProxyCacheMessage $message): bool {
 		if ($participant->getAttendee()->getActorType() !== Attendee::ACTOR_USERS) {
 			return false;
 		}

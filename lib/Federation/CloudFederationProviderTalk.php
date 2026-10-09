@@ -27,6 +27,7 @@ use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\AttendeeMapper;
 use OCA\Talk\Model\Invitation;
 use OCA\Talk\Model\InvitationMapper;
+use OCA\Talk\Model\Message;
 use OCA\Talk\Model\ProxyCacheMessage;
 use OCA\Talk\Model\ProxyCacheMessageMapper;
 use OCA\Talk\Notification\FederationChatNotifier;
@@ -36,6 +37,7 @@ use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Service\ProxyCacheMessageService;
 use OCA\Talk\Service\RoomService;
 use OCP\AppFramework\Db\DoesNotExistException;
+use OCP\AppFramework\Db\MultipleObjectsReturnedException;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Services\IAppConfig;
 use OCP\AppFramework\Utility\ITimeFactory;
@@ -547,9 +549,49 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 			return [];
 		}
 
+		$editedMessage = null;
+		$wasMentionedBefore = false;
+		$isFirstEdit = false;
+		$previousMetaData = [];
+
 		if ($removeParentMessage !== null) {
+			// Read the PREVIOUS cached copy before the re-sync overwrites it. It is the only place
+			// that still holds the original send's replyTo* and thread_id, because
+			// syncRemoteMessage() rebuilds the metadata from scratch and keeps just the silent and
+			// last_edited_* keys. It is also how a first edit is told from a later one: the
+			// original send never writes last_edited_time, while every synced copy carries it.
+			//
+			// KNOWN LIMITATION: this row is shared by every local user of the remote server, but
+			// the host sends one notification per federated participant, so this method runs once
+			// per local user for the same edit. The first run advances the row, so a second local
+			// user's run sees a copy that already has last_edited_time and reads the edit as a
+			// later one. With two or more local users in the conversation, only the first is
+			// notified about a silent message's announcement. Fixing it properly needs
+			// per-attendee state, which the proxy cache does not have.
 			try {
-				$this->pcmService->syncRemoteMessage($room, $participant, $removeParentMessage);
+				$previousMessage = $this->pcmService->findByRemote(
+					$notification['remoteServerUrl'],
+					$notification['remoteToken'],
+					$removeParentMessage,
+				);
+
+				$wasMentionedBefore = $this->federationChatNotifier->isMentioned($participant, $previousMessage);
+				$previousMessageMetaData = $previousMessage->getParsedMetaData();
+				$isFirstEdit = !isset($previousMessageMetaData[Message::METADATA_LAST_EDITED_TIME]);
+				$previousMetaData = array_intersect_key($previousMessageMetaData, array_flip([
+					ProxyCacheMessage::METADATA_REPLY_TO_ACTOR_TYPE,
+					ProxyCacheMessage::METADATA_REPLY_TO_ACTOR_ID,
+					ProxyCacheMessage::METADATA_REPLY_TO_MESSAGE_ID,
+					Message::METADATA_THREAD_ID,
+				]));
+			} catch (DoesNotExistException|MultipleObjectsReturnedException) {
+				// Not cached: aged out of the proxy cache, or never seen. It cannot have notified
+				// before either, and announcing an old message out of the blue is worse than
+				// missing one, so both flags stay false and nothing is announced.
+			}
+
+			try {
+				$editedMessage = $this->pcmService->syncRemoteMessage($room, $participant, $removeParentMessage);
 			} catch (\InvalidArgumentException|CannotReachRemoteException) {
 				$oldMessage = $this->pcmService->findByRemote(
 					$notification['remoteServerUrl'],
@@ -578,6 +620,17 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 
 		if ($message instanceof ProxyCacheMessage) {
 			$this->federationChatNotifier->handleChatMessage($room, $participant, $message, $notification);
+		} elseif ($editedMessage instanceof ProxyCacheMessage) {
+			// Only on a successful re-sync: the catch above deletes the stale copy and leaves the
+			// new text unknown, which is no basis for a notification.
+			$this->federationChatNotifier->handleEditedChatMessage(
+				$room,
+				$participant,
+				$editedMessage,
+				$wasMentionedBefore,
+				$isFirstEdit,
+				$previousMetaData,
+			);
 		}
 
 		return [];
