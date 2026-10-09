@@ -2388,9 +2388,15 @@ class FeatureContext implements Context {
 	public function userEditsMessageToRoom(string $user, string $oldMessage, string $identifier, string $newMessage, int $statusCode, string $apiVersion = 'v1', ?TableNode $formData = null): void {
 		$oldMessage = substr($oldMessage, 1, -1);
 		$oldMessage = str_replace('\n', "\n", $oldMessage);
+		// Same substitution the sending steps do, so a message containing a server URL - a
+		// federated mention, above all - can be found again and can be edited into one.
+		$oldMessage = str_replace('{$LOCAL_URL}', $this->localServerUrl, $oldMessage);
+		$oldMessage = str_replace('{$REMOTE_URL}', $this->remoteServerUrl, $oldMessage);
 		$messageId = self::$textToMessageId[$oldMessage];
 		$newMessage = substr($newMessage, 1, -1);
 		$newMessage = str_replace('\n', "\n", $newMessage);
+		$newMessage = str_replace('{$LOCAL_URL}', $this->localServerUrl, $newMessage);
+		$newMessage = str_replace('{$REMOTE_URL}', $this->remoteServerUrl, $newMessage);
 
 		$this->setCurrentUser($user);
 		$this->sendRequest(
