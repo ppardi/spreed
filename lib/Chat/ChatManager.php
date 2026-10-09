@@ -711,13 +711,22 @@ class ChatManager {
 			$message = json_encode($messageData);
 		}
 
-		$metaData = $comment->getMetaData() ?? [];
+		$originalMetaData = $comment->getMetaData() ?? [];
+
+		$metaData = $originalMetaData;
 		$metaData[Message::METADATA_LAST_EDITED_BY_TYPE] = $participant->getAttendee()->getActorType();
 		$metaData[Message::METADATA_LAST_EDITED_BY_ID] = $participant->getAttendee()->getActorId();
 		$metaData[Message::METADATA_LAST_EDITED_TIME] = $editTime->getTimestamp();
 		$comment->setMetaData($metaData);
 
-		$wasSilent = $metaData[Message::METADATA_SILENT] ?? false;
+		$wasSilent = $originalMetaData[Message::METADATA_SILENT] ?? false;
+
+		// `silent` means "do not notify on send", not "never notify about this message": a silent
+		// message is announced by its FIRST edit, which is the edit that turns a "working on it"
+		// placeholder into the answer. Later edits stay quiet, so a typo fix does not notify again.
+		// The original send never writes last_edited_time, so its absence is what identifies the
+		// first edit - and it has to be read from the metadata as it was BEFORE the write above.
+		$announceSilentMessage = $wasSilent && !isset($originalMetaData[Message::METADATA_LAST_EDITED_TIME]);
 
 		if (!$wasSilent) {
 			$mentionsBefore = $comment->getMentions();
@@ -732,7 +741,9 @@ class ChatManager {
 		$this->commentsManager->save($comment);
 		$this->referenceManager->invalidateCache($chat->getToken());
 
-		if (!$wasSilent) {
+		if ($announceSilentMessage) {
+			$this->notifyAboutAnnouncedSilentMessage($chat, $comment, $participant, $metaData);
+		} elseif (!$wasSilent) {
 			$removedMentions = empty($mentionsAfter) ? $mentionsBefore : array_udiff($mentionsBefore, $mentionsAfter, $this->compareMention(...));
 			$addedMentions = empty($mentionsBefore) ? $mentionsAfter : array_udiff($mentionsAfter, $mentionsBefore, $this->compareMention(...));
 
@@ -771,6 +782,58 @@ class ChatManager {
 			$comment,
 			true
 		);
+	}
+
+	/**
+	 * Sends the notifications the original send deliberately skipped, because a silent message is
+	 * announced by its first edit.
+	 *
+	 * This mirrors the fan-out of sendMessage() with $silent: false, rather than the "added
+	 * mention" rule that an edit of an already-announced message gets: from a recipient's point of
+	 * view the edited message is the message arriving for the first time. The reply notification is
+	 * usually the one that carries it, because an answer written into a placeholder tends to
+	 * mention nobody - it is merely threaded onto the question.
+	 *
+	 * @param array<string, mixed> $metaData
+	 */
+	protected function notifyAboutAnnouncedSilentMessage(Room $chat, IComment $comment, Participant $participant, array $metaData): void {
+		$threadId = isset($metaData[Message::METADATA_THREAD_ID])
+			? (int)$metaData[Message::METADATA_THREAD_ID]
+			: Thread::THREAD_NONE;
+
+		$replyTo = null;
+		if ($comment->getParentId() !== '0') {
+			try {
+				$replyTo = $this->getParentComment($chat, $comment->getParentId());
+			} catch (NotFoundException) {
+				// The question was deleted in the meantime. A mention in the answer can still carry
+				// the notification, so carry on without the reply.
+			}
+		}
+
+		$alreadyNotifiedUsers = [];
+		$usersDirectlyMentioned = $this->notifier->getMentionedUserIds($comment);
+		$federatedUsersDirectlyMentioned = $this->notifier->getMentionedCloudIds($comment);
+
+		if ($replyTo instanceof IComment) {
+			$alreadyNotifiedUsers = $this->notifier->notifyReplyToAuthor($chat, $comment, $replyTo, false, $threadId);
+			if ($replyTo->getActorType() === Attendee::ACTOR_USERS) {
+				$usersDirectlyMentioned[] = $replyTo->getActorId();
+			} elseif ($replyTo->getActorType() === Attendee::ACTOR_FEDERATED_USERS) {
+				$federatedUsersDirectlyMentioned[] = $replyTo->getActorId();
+			}
+		}
+
+		$alreadyNotifiedUsers = $this->notifier->notifyMentionedUsers($chat, $comment, $alreadyNotifiedUsers, false, $participant, $threadId);
+		if (!empty($alreadyNotifiedUsers)) {
+			$userIds = array_column($alreadyNotifiedUsers, 'id');
+			$this->participantService->markUsersAsMentioned($chat, Attendee::ACTOR_USERS, $userIds, (int)$comment->getId(), $usersDirectlyMentioned);
+		}
+		if (!empty($federatedUsersDirectlyMentioned)) {
+			$this->participantService->markUsersAsMentioned($chat, Attendee::ACTOR_FEDERATED_USERS, $federatedUsersDirectlyMentioned, (int)$comment->getId(), $federatedUsersDirectlyMentioned);
+		}
+
+		$this->notifier->notifyOtherParticipant($chat, $comment, $alreadyNotifiedUsers, false, $threadId);
 	}
 
 	public function pinMessage(Room $chat, IComment $comment, Participant $participant, int $pinUntil): ?IComment {

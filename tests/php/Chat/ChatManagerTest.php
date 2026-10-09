@@ -14,6 +14,7 @@ use OCA\Talk\Chat\Notifier;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\AttendeeMapper;
 use OCA\Talk\Model\Invitation;
+use OCA\Talk\Model\Message;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Service\AttachmentService;
@@ -867,5 +868,157 @@ class ChatManagerTest extends TestCase {
 			[[json_encode(['parameters' => ['share' => 'notExists']])], 0],
 			[[json_encode(['parameters' => ['share' => 1]])], 1],
 		];
+	}
+
+	/**
+	 * Builds the room, attendee and participant the editMessage() tests share.
+	 *
+	 * @return array{0: Room&MockObject, 1: Participant}
+	 */
+	protected function editMessageFixture(): array {
+		$chat = $this->createMock(Room::class);
+		$chat->method('getId')->willReturn(1234);
+		$chat->method('getToken')->willReturn('t0k3n');
+
+		$mapper = new AttendeeMapper(\OCP\Server::get(IDBConnection::class));
+		$attendee = $mapper->createAttendeeFromRow([
+			'a_id' => 1,
+			'room_id' => 1234,
+			'actor_type' => Attendee::ACTOR_USERS,
+			'actor_id' => 'tradeagent',
+			'display_name' => 'TradeAgent',
+			'pin' => '',
+			'participant_type' => Participant::USER,
+			'favorite' => false,
+			'notification_level' => Participant::NOTIFY_MENTION,
+			'notification_calls' => Participant::NOTIFY_CALLS_ON,
+			'last_joined_call' => 0,
+			'last_read_message' => 0,
+			'last_common_read_message' => 0,
+			'last_mention_message' => 0,
+			'last_mention_direct' => 0,
+			'read_privacy' => Participant::PRIVACY_PUBLIC,
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'access_token' => '',
+			'remote_id' => '',
+			'phone_number' => '',
+			'call_id' => '',
+			'invited_cloud_id' => '',
+			'state' => Invitation::STATE_ACCEPTED,
+			'unread_messages' => 0,
+			'last_attendee_activity' => 0,
+			'archived' => 0,
+			'important' => 0,
+			'sensitive' => 0,
+			'tag_ids' => null,
+			'has_unread_threads' => false,
+			'has_unread_thread_mentions' => false,
+			'has_unread_thread_directs' => false,
+			'hidden_pinned_id' => 0,
+			'has_scheduled_messages' => 0,
+		]);
+
+		return [$chat, new Participant($chat, $attendee, null)];
+	}
+
+	/**
+	 * `silent` means "do not notify on send", so the FIRST edit of a silent message is its
+	 * announcement: that is the edit which replaces a "working on it" placeholder with the
+	 * answer. The reply notification is what carries it, because an answer usually mentions
+	 * nobody - it is merely threaded onto the question.
+	 */
+	public function testEditMessageAnnouncesSilentMessageOnFirstEdit(): void {
+		[$chat, $participant] = $this->editMessageFixture();
+
+		$parent = $this->createMock(IComment::class);
+		$parent->method('getActorType')->willReturn(Attendee::ACTOR_USERS);
+		$parent->method('getActorId')->willReturn('paulp');
+		$parent->method('getObjectType')->willReturn('chat');
+		$parent->method('getObjectId')->willReturn('1234');
+
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getId')->willReturn('123456');
+		$comment->method('getVerb')->willReturn('comment');
+		$comment->method('getMetaData')->willReturn([Message::METADATA_SILENT => true]);
+		$comment->method('getParentId')->willReturn('123455');
+
+		$this->commentsManager->method('get')->with('123455')->willReturn($parent);
+
+		$this->notifier->method('getMentionedUserIds')->willReturn([]);
+		$this->notifier->method('getMentionedCloudIds')->willReturn([]);
+
+		$replied = [['id' => 'paulp', 'type' => 'users', 'reason' => 'reply']];
+
+		$this->notifier->expects($this->once())
+			->method('notifyReplyToAuthor')
+			->with($chat, $comment, $parent, false, 0)
+			->willReturn($replied);
+		$this->notifier->expects($this->once())
+			->method('notifyMentionedUsers')
+			->with($chat, $comment, $replied, false, $participant, 0)
+			->willReturn($replied);
+		$this->notifier->expects($this->once())
+			->method('notifyOtherParticipant')
+			->with($chat, $comment, $replied, false, 0);
+		$this->notifier->expects($this->never())
+			->method('removeMentionNotificationAfterEdit');
+
+		$chatManager = $this->getManager(['addSystemMessage']);
+		$chatManager->method('addSystemMessage')->willReturn($this->createStub(IComment::class));
+
+		$chatManager->editMessage($chat, $comment, $participant, new \DateTime('@1760000000'), 'the answer');
+	}
+
+	/**
+	 * Only the first edit announces. Later edits must stay quiet, or every typo fix would
+	 * notify again - the `silent` key never leaves the metadata, so the absence of
+	 * last_edited_time is the only thing that identifies the first edit.
+	 */
+	public function testEditMessageDoesNotAnnounceSilentMessageOnLaterEdit(): void {
+		[$chat, $participant] = $this->editMessageFixture();
+
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getId')->willReturn('123456');
+		$comment->method('getVerb')->willReturn('comment');
+		$comment->method('getMetaData')->willReturn([
+			Message::METADATA_SILENT => true,
+			Message::METADATA_LAST_EDITED_TIME => 1759999000,
+		]);
+
+		$this->notifier->expects($this->never())->method('notifyReplyToAuthor');
+		$this->notifier->expects($this->never())->method('notifyMentionedUsers');
+		$this->notifier->expects($this->never())->method('notifyOtherParticipant');
+
+		$chatManager = $this->getManager(['addSystemMessage']);
+		$chatManager->method('addSystemMessage')->willReturn($this->createStub(IComment::class));
+
+		$chatManager->editMessage($chat, $comment, $participant, new \DateTime('@1760000000'), 'a typo fix');
+	}
+
+	/**
+	 * Regression guard for the existing non-silent path: an edit that adds no mention must not
+	 * notify anybody, and must not try to remove notifications either.
+	 */
+	public function testEditMessageWithoutAddedMentionsDoesNotNotify(): void {
+		[$chat, $participant] = $this->editMessageFixture();
+
+		$comment = $this->createMock(IComment::class);
+		$comment->method('getId')->willReturn('123456');
+		$comment->method('getVerb')->willReturn('comment');
+		$comment->method('getMetaData')->willReturn([]);
+		$comment->method('getMentions')->willReturn([]);
+
+		$this->notifier->method('getMentionedUserIds')->willReturn([]);
+		$this->notifier->method('getUsersToNotify')->willReturn([]);
+
+		$this->notifier->expects($this->never())->method('notifyMentionedUsers');
+		$this->notifier->expects($this->never())->method('notifyOtherParticipant');
+		$this->notifier->expects($this->never())->method('notifyReplyToAuthor');
+		$this->notifier->expects($this->never())->method('removeMentionNotificationAfterEdit');
+
+		$chatManager = $this->getManager(['addSystemMessage']);
+		$chatManager->method('addSystemMessage')->willReturn($this->createStub(IComment::class));
+
+		$chatManager->editMessage($chat, $comment, $participant, new \DateTime('@1760000000'), 'rephrased');
 	}
 }
