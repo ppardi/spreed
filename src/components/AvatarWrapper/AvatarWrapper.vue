@@ -354,9 +354,12 @@ export default {
 	}
 
 	&--offline {
-		opacity: .4;
-
+		// Dim the avatar, not the whole wrapper: the federated status badge sits
+		// outside .avatardiv and must stay legible. The dim means "not in this
+		// call"; the badge means "their status on their own server". Core's local
+		// status icon renders inside .avatardiv, so it keeps dimming as before.
 		& :deep(.avatardiv) {
+			opacity: .4;
 			background: rgba(var(--color-main-background-rgb), .4) !important;
 		}
 	}
@@ -377,20 +380,25 @@ export default {
 
 		// The globe's shape says "federated"; its color says whether they are around.
 		// No modifier means unknown, which must stay distinct from offline.
+		// These are the same colors core fills its own status icons with, so a
+		// federated "away" reads as the same amber as a local one. The literals are
+		// the fallback because the theme's --color-success/warning/error are panel
+		// fills that go near-black in dark mode; only --user-status-color-* carries
+		// a color that works against both backgrounds.
 		&--online {
-			color: var(--color-success-text);
+			color: var(--user-status-color-online, #2D7B41);
 		}
 
 		&--away {
-			color: var(--color-warning-text);
+			color: var(--user-status-color-away, #C88800);
 		}
 
 		&--dnd {
-			color: var(--color-error-text);
+			color: var(--user-status-color-busy, #DB0606);
 		}
 
 		&--offline {
-			color: var(--color-text-maxcontrast);
+			color: var(--user-status-color-offline, #6B6B6B);
 		}
 	}
 }
