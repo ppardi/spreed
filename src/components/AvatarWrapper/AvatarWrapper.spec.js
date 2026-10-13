@@ -140,6 +140,42 @@ describe('AvatarWrapper.vue', () => {
 			expect(wrapper.find('.avatar-wrapper__user-status').classes()).toContain('avatar-wrapper__user-status--away')
 		})
 
+		it.each(['online', 'dnd', 'offline'])('tints the federation badge for %s', (status) => {
+			const wrapper = mount(AvatarWrapper, {
+				props: { source: ATTENDEE.ACTOR_TYPE.FEDERATED_USERS, id: 'bill@cloud.test', name: 'Bill', showUserStatus: true, preloadedUserStatus: { status } },
+			})
+			expect(wrapper.find('.avatar-wrapper__user-status').classes()).toContain(`avatar-wrapper__user-status--${status}`)
+		})
+
+		const mountBadge = (preloadedUserStatus) => mount(AvatarWrapper, {
+			props: { source: ATTENDEE.ACTOR_TYPE.FEDERATED_USERS, id: 'bill@cloud.test', name: 'Bill', showUserStatus: true, preloadedUserStatus },
+		})
+		const badgeLabel = (wrapper) => wrapper.find('.avatar-wrapper__user-status').attributes('aria-label')
+
+		it.each([
+			['online', 'Online'],
+			['away', 'Away'],
+			['dnd', 'Do not disturb'],
+			['offline', 'Offline'],
+		])('labels a %s badge with the translated status, not the raw token', (status, word) => {
+			const label = badgeLabel(mountBadge({ status }))
+			expect(label).toBe(t('spreed', 'Federated user — {status}', { status: t('spreed', word) }))
+			expect(label).toContain(t('spreed', word))
+			if (status === 'dnd') {
+				expect(label).not.toContain('dnd')
+			}
+		})
+
+		it.each(['garbage', 'invisible', 'constructor', '__proto__', ''])('falls back to the plain label for the unrecognized token "%s"', (status) => {
+			const label = badgeLabel(mountBadge({ status }))
+			expect(label).toBe(t('spreed', 'Federated user'))
+		})
+
+		it('uses the plain label when there is no status at all', () => {
+			expect(badgeLabel(mountBadge(undefined))).toBe(t('spreed', 'Federated user'))
+			expect(badgeLabel(mountBadge({}))).toBe(t('spreed', 'Federated user'))
+		})
+
 		it('leaves the badge untinted when the status is unknown', () => {
 			const wrapper = mount(AvatarWrapper, {
 				props: { source: ATTENDEE.ACTOR_TYPE.FEDERATED_USERS, id: 'bill@cloud.test', name: 'Bill', showUserStatus: true },

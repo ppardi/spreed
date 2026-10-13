@@ -238,7 +238,15 @@ export default {
 		},
 
 		federatedStatusLabel() {
-			const status = this.preloadedUserStatus?.status
+			// Only known tokens are shown, translated; anything else falls back to the plain label
+			const statusLabels = {
+				online: t('spreed', 'Online'),
+				away: t('spreed', 'Away'),
+				dnd: t('spreed', 'Do not disturb'),
+				offline: t('spreed', 'Offline'),
+			}
+			const token = this.preloadedUserStatus?.status
+			const status = Object.hasOwn(statusLabels, token) ? statusLabels[token] : null
 			return status
 				? t('spreed', 'Federated user — {status}', { status })
 				: t('spreed', 'Federated user')
