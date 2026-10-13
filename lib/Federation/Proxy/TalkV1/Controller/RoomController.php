@@ -42,11 +42,12 @@ class RoomController {
 	 * 200: Participants returned
 	 * 403: Missing permissions for getting participants
 	 */
-	public function getParticipants(Room $room, Participant $participant): DataResponse {
+	public function getParticipants(Room $room, Participant $participant, bool $includeStatus = false): DataResponse {
 		$proxy = $this->proxy->get(
 			$participant->getAttendee()->getInvitedCloudId(),
 			$participant->getAttendee()->getAccessToken(),
 			$room->getRemoteServer() . '/ocs/v2.php/apps/spreed/api/v4/room/' . $room->getRemoteToken() . '/participants',
+			$includeStatus ? ['includeStatus' => 1] : [],
 		);
 
 		/** @var list<TalkParticipant> $data */

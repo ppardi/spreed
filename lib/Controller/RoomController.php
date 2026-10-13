@@ -1222,7 +1222,7 @@ class RoomController extends AEnvironmentAwareOCSController {
 		if ($this->room->isFederatedConversation()) {
 			/** @var \OCA\Talk\Federation\Proxy\TalkV1\Controller\RoomController $proxy */
 			$proxy = \OCP\Server::get(\OCA\Talk\Federation\Proxy\TalkV1\Controller\RoomController::class);
-			$response = $proxy->getParticipants($this->room, $this->participant);
+			$response = $proxy->getParticipants($this->room, $this->participant, $includeStatus);
 			$data = $response->getData();
 
 			if ($this->userId !== null
@@ -1323,7 +1323,7 @@ class RoomController extends AEnvironmentAwareOCSController {
 		$results = $headers = $statuses = [];
 		$maxPingAge = $this->timeFactory->getTime() - Session::SESSION_TIMEOUT_KILL;
 
-		if ($this->userId !== null
+		if (($this->userId !== null || $this->federationAuthenticator->isFederationRequest())
 			&& $includeStatus
 			&& count($participants) < Config::USER_STATUS_INTEGRATION_LIMIT
 			&& $this->appManager->isEnabledForUser('user_status')) {
