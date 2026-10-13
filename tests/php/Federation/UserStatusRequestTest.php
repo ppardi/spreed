@@ -11,6 +11,7 @@ namespace OCA\Talk\Tests\php\Federation;
 
 use OCA\FederatedFileSharing\AddressHandler;
 use OCA\Talk\Config;
+use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Federation\CloudFederationProviderTalk;
 use OCA\Talk\Federation\FederationManager;
 use OCA\Talk\Federation\Proxy\TalkV1\UserConverter;
@@ -26,6 +27,7 @@ use OCA\Talk\Room;
 use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Service\ProxyCacheMessageService;
 use OCA\Talk\Service\RoomService;
+use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Services\IAppConfig;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\EventDispatcher\IEventDispatcher;
@@ -36,6 +38,7 @@ use OCP\ISession;
 use OCP\IUser;
 use OCP\IUserManager;
 use OCP\Notification\IManager as INotificationManager;
+use OCP\Share\Exceptions\ShareNotFound;
 use OCP\UserStatus\IManager as IUserStatusManager;
 use OCP\UserStatus\IUserStatus;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -53,6 +56,10 @@ class UserStatusRequestTest extends TestCase {
 	protected ParticipantService&MockObject $participantService;
 	protected IUserStatusManager&MockObject $statusManager;
 	protected CloudFederationProviderTalk $provider;
+	/** @var array<int, Room&MockObject> */
+	private array $rooms = [];
+	/** @var array<int, list<Participant>> */
+	private array $participantsByRoom = [];
 
 	public function setUp(): void {
 		parent::setUp();
@@ -72,6 +79,14 @@ class UserStatusRequestTest extends TestCase {
 		$this->addressHandler->method('urlContainProtocol')->willReturn(true);
 		$this->appConfig->method('getAppValueBool')
 			->willReturnCallback(static fn (string $key, bool $default = false): bool => $default);
+
+		// Every room this server holds is answered from the maps that givenRoomParticipants() fills
+		$this->manager->method('getRoomById')
+			->willReturnCallback(fn (int $roomId): Room => $this->rooms[$roomId] ?? throw new RoomNotFoundException());
+		$this->participantService->method('getParticipantsByActorType')
+			->willReturnCallback(fn (Room $room, string $actorType): array => $actorType === Attendee::ACTOR_USERS
+				? ($this->participantsByRoom[$room->getId()] ?? [])
+				: []);
 
 		$this->provider = $this->buildProvider($this->appConfig);
 	}
@@ -124,18 +139,19 @@ class UserStatusRequestTest extends TestCase {
 	}
 
 	/**
-	 * This server's copy of the shared room, and the local users who are in it
+	 * One of this server's copies of a shared room, and the local users who are in it. Call it once
+	 * per room to model a server that holds several.
 	 *
 	 * @param list<string> $userIds
 	 */
-	private function givenRoomParticipants(int $localRoomId, array $userIds): void {
+	private function givenRoomParticipants(int $localRoomId, array $userIds, bool $federated = true): void {
 		$room = $this->createMock(Room::class);
 		$room->method('getId')->willReturn($localRoomId);
-		// The invite always points at a federated conversation, never at one of our own rooms
-		$room->method('isFederatedConversation')->willReturn(true);
-		$this->manager->method('getRoomById')->with($localRoomId)->willReturn($room);
+		// An invite always points at a federated conversation, never at one of our own rooms
+		$room->method('isFederatedConversation')->willReturn($federated);
+		$this->rooms[$localRoomId] = $room;
 
-		$participants = array_map(
+		$this->participantsByRoom[$localRoomId] = array_map(
 			static fn (string $userId): Participant => new Participant(
 				$room,
 				Attendee::fromRow([
@@ -147,10 +163,6 @@ class UserStatusRequestTest extends TestCase {
 			),
 			$userIds,
 		);
-
-		$this->participantService->method('getParticipantsByActorType')
-			->with($room, Attendee::ACTOR_USERS)
-			->willReturn($participants);
 	}
 
 	/**
@@ -277,11 +289,19 @@ class UserStatusRequestTest extends TestCase {
 	public function testInviteForOneRoomCannotReadStatusesOfAnother(): void {
 		$this->givenInvitationForRoom('https://host.test', 7, 'secret', localRoomId: 42);
 		$this->givenRoomParticipants(42, ['bill']);
-		// dave is a user of this server with a status, but he is only in room 99
+		// dave is a user of this server with a status, but he is only in room 99, a different
+		// conversation that this invite has nothing to do with
+		$this->givenRoomParticipants(99, ['dave']);
 		$this->givenLocalAccounts(['bill', 'dave']);
-		$this->givenStatuses(['dave' => [IUserStatus::ONLINE, null]]);
+		$this->givenStatuses([
+			'bill' => [IUserStatus::AWAY, null],
+			'dave' => [IUserStatus::ONLINE, null],
+		]);
 
-		$this->assertSame([], $this->request(['dave@cloud.test']));
+		$this->assertSame(
+			['bill@cloud.test' => ['status' => 'away', 'icon' => null]],
+			$this->request(['bill@cloud.test', 'dave@cloud.test']),
+		);
 	}
 
 	public function testAUserWithNoStatusIsAbsentRatherThanReportedOffline(): void {
@@ -321,5 +341,27 @@ class UserStatusRequestTest extends TestCase {
 		// Only the first 200 are considered, so a hostile list cannot turn one request into a
 		// 500-user lookup. bill is past the cut, so nothing is left to look up at all.
 		$this->assertSame([], $this->request($cloudIds));
+	}
+
+	public function testAnInviteThatDoesNotAuthenticateIsRefusedBeforeAnythingIsLookedUp(): void {
+		$this->invitationMapper->method('getByRemoteAndAccessToken')
+			->willThrowException(new DoesNotExistException('no such invite'));
+		$this->givenRoomParticipants(42, ['bill']);
+		$this->givenLocalAccounts(['bill']);
+		$this->statusManager->expects($this->never())->method('getUserStatuses');
+
+		$this->expectException(ShareNotFound::class);
+		$this->request(['bill@cloud.test']);
+	}
+
+	public function testAnInviteForARoomThatIsNotFederatedIsRefused(): void {
+		$this->givenInvitationForRoom('https://host.test', 7, 'secret', localRoomId: 42);
+		// One of this server's own rooms, which a remote invite must never be able to reach
+		$this->givenRoomParticipants(42, ['bill'], federated: false);
+		$this->givenLocalAccounts(['bill']);
+		$this->statusManager->expects($this->never())->method('getUserStatuses');
+
+		$this->expectException(ShareNotFound::class);
+		$this->request(['bill@cloud.test']);
 	}
 }
