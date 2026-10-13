@@ -12,6 +12,7 @@ use OCA\Talk\Config;
 use OCA\Talk\Federation\Attachments\FeatureSupport;
 use OCA\Talk\Federation\CloudFederationProviderTalk;
 use OCA\Talk\Federation\FederationManager;
+use OCA\Talk\Federation\Presence\FeatureSupport as PresenceFeatureSupport;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
 use OCP\OCM\Events\ResourceTypeRegisterEvent;
@@ -45,6 +46,7 @@ class ResourceTypeRegisterListener implements IEventListener {
 				'talk-v1' => '/ocs/v2.php/apps/spreed/api/',
 				FeatureSupport::OCM_PROTOCOL => '/ocs/v2.php/apps/spreed/api/',
 				FeatureSupport::OCM_PROTOCOL_V2 => '/ocs/v2.php/apps/spreed/api/',
+				PresenceFeatureSupport::OCM_PROTOCOL => '/ocs/v2.php/apps/spreed/api/',
 			]
 		);
 	}
