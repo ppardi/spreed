@@ -310,8 +310,11 @@ class UserStatusRequestTest extends TestCase {
 		$this->givenLocalAccounts(['bill']);
 		$this->givenStatuses([]);
 
-		// getUserStatuses() drops statuses older than INVALIDATE_STATUS_THRESHOLD, so "no entry"
-		// means we genuinely do not know - which must render as unknown, not as offline.
+		// getUserStatuses() omits a user only when no status row exists at all. An expired row is
+		// not omitted: core's StatusService rewrites it to offline, so a stale user reads as
+		// offline. "No entry" therefore means a user who never had a status, which must render as
+		// unknown, not as offline. The untinted badge is mostly reached this way, or when the
+		// remote cannot be reached at all.
 		$this->assertSame([], $this->request(['bill@cloud.test']));
 	}
 
