@@ -1345,7 +1345,8 @@ class RoomController extends AEnvironmentAwareOCSController {
 		}
 
 		$federatedStatuses = [];
-		if ($includeStatus
+		if (($this->userId !== null || $isFederationRequest)
+			&& $includeStatus
 			&& count($participants) < Config::USER_STATUS_INTEGRATION_LIMIT
 			&& $this->appManager->isEnabledForUser('user_status')) {
 			$federated = array_values(array_filter(
