@@ -172,8 +172,16 @@ describe('AvatarWrapper.vue', () => {
 		})
 
 		it('hides the status mark NcAvatar would draw in the badge corner for federated users', () => {
-			// NcAvatar would otherwise paint its own mark where the globe sits
+			// NcAvatar would otherwise paint its own mark where the globe sits.
+			// A federated user always takes the special-avatar branch, by two different routes:
+			// without a token iconClass() yields 'icon-user', and with one the isFederatedUser
+			// && token term carries it. Both are asserted because ParticipantItem passes a token
+			// and other call sites do not, so each route is a real production configuration.
 			expect(mountBadge({ status: 'away' }).findComponent(NcAvatar).props('hideStatus')).toBe(true)
+			const withToken = mount(AvatarWrapper, {
+				props: { source: ATTENDEE.ACTOR_TYPE.FEDERATED_USERS, id: 'bill@cloud.test', name: 'Bill', token: 'abcd1234', showUserStatus: true, preloadedUserStatus: { status: 'away' } },
+			})
+			expect(withToken.findComponent(NcAvatar).props('hideStatus')).toBe(true)
 			const local = mount(AvatarWrapper, {
 				props: { source: ATTENDEE.ACTOR_TYPE.USERS, id: 'bill', name: 'Bill', showUserStatus: true, preloadedUserStatus: { status: 'away' } },
 			})
