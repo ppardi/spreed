@@ -21,6 +21,7 @@ use OCP\AppFramework\Services\IAppConfig;
 use OCP\Federation\ICloudIdManager;
 use OCP\ICache;
 use OCP\ICacheFactory;
+use OCP\UserStatus\IUserStatus;
 
 /**
  * The statuses of federated participants, as the server hosting the conversation sees them.
@@ -37,15 +38,36 @@ class FederatedUserStatusService {
 	private const TTL = 120;
 	/** Seconds before a server that could not be reached is asked again */
 	private const UNREACHABLE_TTL = 30;
-	/** Seconds before a server that rejected the notification type is asked again */
+	/**
+	 * Seconds before a server is asked again after it rejected the notification type, or refused
+	 * our credential. The latter matters most: core throttles the asker's IP for every refused
+	 * notification, so a stale invite retried every 30 seconds would throttle all federation.
+	 */
 	private const UNSUPPORTED_TTL = 3600;
+	/** Longest icon accepted from a remote; an emoji is a handful of bytes, so this is generous */
+	private const MAX_ICON_LENGTH = 16;
+	/**
+	 * The only statuses accepted from a remote. INVISIBLE is left out on purpose: the answering
+	 * side reports it as offline, so it never legitimately arrives.
+	 */
+	private const ACCEPTED_STATUSES = [
+		IUserStatus::ONLINE,
+		IUserStatus::AWAY,
+		IUserStatus::DND,
+		IUserStatus::OFFLINE,
+	];
 
+	/** The remote could not be reached or answered unreadably */
 	private const UNREACHABLE = 'unreachable';
+	/** The remote rejected the notification type, so it is not upgraded */
 	private const UNSUPPORTED = 'unsupported';
+	/** The remote is upgraded but refused the credential we asked with */
+	private const REFUSED = 'refused';
 	/** The remote answered but holds no current status for that user, which is common and not an error */
 	private const UNKNOWN = 'unknown';
 
-	private ICache $cache;
+	/** Null when this server has no memcache configured */
+	private ?ICache $cache;
 
 	public function __construct(
 		private readonly BackendNotifier $backendNotifier,
@@ -54,7 +76,7 @@ class FederatedUserStatusService {
 		private readonly IAppConfig $appConfig,
 		ICacheFactory $cacheFactory,
 	) {
-		$this->cache = $cacheFactory->createDistributed(CachePrefix::FEDERATED_PRESENCE);
+		$this->cache = $cacheFactory->isAvailable() ? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PRESENCE) : null;
 	}
 
 	/**
@@ -71,6 +93,14 @@ class FederatedUserStatusService {
 			return [];
 		}
 
+		$cache = $this->cache;
+		if ($cache === null) {
+			// Without a memcache every set() is discarded, so none of the TTLs below would exist
+			// and each request would re-probe discovery and ask every remote live, which can be
+			// many seconds inside the participants request. Unknown is rendered safely instead.
+			return [];
+		}
+
 		$statuses = [];
 		/** @var array<string, list<string>> $missingByServer */
 		$missingByServer = [];
@@ -81,12 +111,12 @@ class FederatedUserStatusService {
 			$attendee = $participant->getAttendee();
 			$cloudId = $attendee->getActorId();
 
-			$cached = $this->cache->get($this->key($cloudId));
+			$cached = $cache->get($this->key($cloudId));
 			if (is_array($cached)) {
 				$statuses[$cloudId] = $cached;
 				continue;
 			}
-			if ($cached === self::UNREACHABLE || $cached === self::UNSUPPORTED || $cached === self::UNKNOWN) {
+			if ($cached === self::UNREACHABLE || $cached === self::UNSUPPORTED || $cached === self::REFUSED || $cached === self::UNKNOWN) {
 				// Still backing off from that server
 				continue;
 			}
@@ -130,12 +160,19 @@ class FederatedUserStatusService {
 				// Rejected the notification type: the server is not upgraded. Feature detection
 				// should have caught this, so this is the belt-and-braces path - back off for an
 				// hour rather than asking again every two minutes.
-				$this->remember($cloudIds, self::UNSUPPORTED, self::UNSUPPORTED_TTL);
+				$this->remember($cache, $cloudIds, self::UNSUPPORTED, self::UNSUPPORTED_TTL);
 				continue;
 			}
 
-			if ($answer === null) {
-				$this->remember($cloudIds, self::UNREACHABLE, self::UNREACHABLE_TTL);
+			if ($answer === BackendNotifier::USER_STATUSES_REFUSED) {
+				// Reachable and upgraded, but it will not accept our credential. Core throttles
+				// the asker for each such answer, so wait as long as for an un-upgraded server.
+				$this->remember($cache, $cloudIds, self::REFUSED, self::UNSUPPORTED_TTL);
+				continue;
+			}
+
+			if (!is_array($answer)) {
+				$this->remember($cache, $cloudIds, self::UNREACHABLE, self::UNREACHABLE_TTL);
 				continue;
 			}
 
@@ -143,16 +180,23 @@ class FederatedUserStatusService {
 				// Driven by what was asked for, not by what came back, so a remote cannot answer
 				// about users this server never asked about.
 				$entry = $answer[$cloudId] ?? null;
-				if (!is_array($entry) || !isset($entry['status']) || !is_string($entry['status'])) {
+				if (!is_array($entry)
+					|| !isset($entry['status'])
+					|| !is_string($entry['status'])
+					|| !in_array($entry['status'], self::ACCEPTED_STATUSES, true)) {
 					// No usable answer. A user without a current status is simply absent from the
 					// remote's map, so remember that rather than asking again on every request. It
 					// stays out of the result: a missing key is how the UI shows "unknown".
-					$this->cache->set($this->key($cloudId), self::UNKNOWN, self::TTL);
+					$cache->set($this->key($cloudId), self::UNKNOWN, self::TTL);
 					continue;
 				}
 				$icon = $entry['icon'] ?? null;
-				$value = ['status' => $entry['status'], 'icon' => is_string($icon) ? $icon : null];
-				$this->cache->set($this->key($cloudId), $value, self::TTL);
+				// The icon is remote-controlled text shown in the participant list, so bound it
+				$value = [
+					'status' => $entry['status'],
+					'icon' => is_string($icon) && $icon !== '' && mb_strlen($icon) <= self::MAX_ICON_LENGTH ? $icon : null,
+				];
+				$cache->set($this->key($cloudId), $value, self::TTL);
 				$statuses[$cloudId] = $value;
 			}
 		}
@@ -163,9 +207,9 @@ class FederatedUserStatusService {
 	/**
 	 * @param list<string> $cloudIds
 	 */
-	private function remember(array $cloudIds, string $marker, int $ttl): void {
+	private function remember(ICache $cache, array $cloudIds, string $marker, int $ttl): void {
 		foreach ($cloudIds as $cloudId) {
-			$this->cache->set($this->key($cloudId), $marker, $ttl);
+			$cache->set($this->key($cloudId), $marker, $ttl);
 		}
 	}
 

@@ -33,6 +33,7 @@ class FederatedUserStatusServiceTest extends TestCase {
 	protected Room&MockObject $room;
 	/** @var array<string, array{value: mixed, ttl: int}> */
 	protected array $cached = [];
+	protected bool $cacheAvailable = true;
 	protected FederatedUserStatusService $service;
 
 	public function setUp(): void {
@@ -48,6 +49,7 @@ class FederatedUserStatusServiceTest extends TestCase {
 			return true;
 		});
 		$this->cacheFactory = $this->createMock(ICacheFactory::class);
+		$this->cacheFactory->method('isAvailable')->willReturn($this->cacheAvailable);
 		$this->cacheFactory->method('createDistributed')->with('talk/federated-presence')->willReturn($this->cache);
 
 		$this->cloudIdManager = $this->createMock(ICloudIdManager::class);
@@ -111,6 +113,26 @@ class FederatedUserStatusServiceTest extends TestCase {
 		$result = $this->service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]);
 
 		$this->assertSame(['bill@cloud.test' => ['status' => 'away', 'icon' => null]], $result);
+	}
+
+	public function testWithoutAMemcacheNothingIsFetchedAndNothingIsKnown(): void {
+		// A NullCache discards every set(), so the TTLs would not exist and each request would
+		// probe the remote live. Degrading to "unknown" is the safe alternative.
+		$cacheFactory = $this->createMock(ICacheFactory::class);
+		$cacheFactory->method('isAvailable')->willReturn(false);
+		$cacheFactory->expects($this->never())->method('createDistributed');
+		$this->featureSupport->expects($this->never())->method('remoteSupports');
+		$this->backendNotifier->expects($this->never())->method('requestUserStatuses');
+
+		$service = new FederatedUserStatusService(
+			$this->backendNotifier,
+			$this->featureSupport,
+			$this->cloudIdManager,
+			$this->enabledAppConfig(),
+			$cacheFactory,
+		);
+
+		$this->assertSame([], $service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]));
 	}
 
 	public function testUnsupportedRemoteIsNeverAsked(): void {
@@ -179,6 +201,24 @@ class FederatedUserStatusServiceTest extends TestCase {
 		// A distinct marker, because an hour and 30 seconds are very different states to find in
 		// the cache when working out why someone shows no presence.
 		$this->assertSame(['value' => 'unsupported', 'ttl' => 3600], $this->cached[$this->cacheKeyFor('bill@cloud.test')]);
+	}
+
+	public function testARemoteThatRefusesOurCredentialIsBackedOffFromForAnHour(): void {
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->backendNotifier->method('requestUserStatuses')->willReturn(BackendNotifier::USER_STATUSES_REFUSED);
+
+		$this->assertSame([], $this->service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]));
+		// Its own marker and the long TTL: core throttles the asker for every refused notification,
+		// so the 30 seconds an unreachable server gets would keep the throttle alive indefinitely.
+		$this->assertSame(['value' => 'refused', 'ttl' => 3600], $this->cached[$this->cacheKeyFor('bill@cloud.test')]);
+	}
+
+	public function testARefusedCacheEntryIsNotRetriedWithinItsTtl(): void {
+		$this->cached[$this->cacheKeyFor('bill@cloud.test')] = ['value' => 'refused', 'ttl' => 3600];
+		$this->featureSupport->expects($this->never())->method('remoteSupports');
+		$this->backendNotifier->expects($this->never())->method('requestUserStatuses');
+
+		$this->assertSame([], $this->service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]));
 	}
 
 	public function testANegativeCacheEntryIsNotRetriedWithinItsTtl(): void {
@@ -305,5 +345,61 @@ class FederatedUserStatusServiceTest extends TestCase {
 		], $result);
 		$this->assertSame('unknown', $this->cached[$this->cacheKeyFor('bill@cloud.test')]['value']);
 		$this->assertSame('unknown', $this->cached[$this->cacheKeyFor('carol@cloud.test')]['value']);
+	}
+
+	public function testOnlyTheStatusVocabularyIsAcceptedFromARemote(): void {
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->backendNotifier->method('requestUserStatuses')->willReturn([
+			'a@cloud.test' => ['status' => 'online', 'icon' => null],
+			'b@cloud.test' => ['status' => 'away', 'icon' => null],
+			'c@cloud.test' => ['status' => 'dnd', 'icon' => null],
+			'd@cloud.test' => ['status' => 'offline', 'icon' => null],
+			// The answering side maps invisible to offline, so it must never arrive
+			'e@cloud.test' => ['status' => 'invisible', 'icon' => null],
+			// Interpolated into a CSS class by the frontend, so anything else is refused here
+			'f@cloud.test' => ['status' => 'online evil-class', 'icon' => null],
+			'g@cloud.test' => ['status' => 'ONLINE', 'icon' => null],
+			'h@cloud.test' => ['status' => '', 'icon' => null],
+		]);
+
+		$ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+		$result = $this->service->getStatuses($this->room, array_map(
+			fn (string $id, int $i): Participant => $this->federatedParticipant($id . '@cloud.test', $i + 1),
+			$ids,
+			array_keys($ids),
+		));
+
+		$this->assertSame(['a@cloud.test', 'b@cloud.test', 'c@cloud.test', 'd@cloud.test'], array_keys($result));
+		foreach (['e', 'f', 'g', 'h'] as $id) {
+			// An unaccepted status takes the "no usable answer" path
+			$this->assertSame('unknown', $this->cached[$this->cacheKeyFor($id . '@cloud.test')]['value']);
+		}
+	}
+
+	public function testTheIconIsBoundedAndOtherwiseNormalizedToNull(): void {
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->backendNotifier->method('requestUserStatuses')->willReturn([
+			'a@cloud.test' => ['status' => 'away', 'icon' => '🏃'],
+			'b@cloud.test' => ['status' => 'away', 'icon' => '👨‍👩‍👧‍👦'],
+			'c@cloud.test' => ['status' => 'away', 'icon' => str_repeat('x', 17)],
+			'd@cloud.test' => ['status' => 'away', 'icon' => str_repeat('x', 5000)],
+			'e@cloud.test' => ['status' => 'away', 'icon' => ''],
+		]);
+
+		$result = $this->service->getStatuses($this->room, [
+			$this->federatedParticipant('a@cloud.test', 1),
+			$this->federatedParticipant('b@cloud.test', 2),
+			$this->federatedParticipant('c@cloud.test', 3),
+			$this->federatedParticipant('d@cloud.test', 4),
+			$this->federatedParticipant('e@cloud.test', 5),
+		]);
+
+		$this->assertSame('🏃', $result['a@cloud.test']['icon']);
+		// A family emoji is seven code points joined, and must still fit
+		$this->assertSame('👨‍👩‍👧‍👦', $result['b@cloud.test']['icon']);
+		// The status is still relayed when the icon is rejected
+		$this->assertSame(['status' => 'away', 'icon' => null], $result['c@cloud.test']);
+		$this->assertNull($result['d@cloud.test']['icon']);
+		$this->assertNull($result['e@cloud.test']['icon']);
 	}
 }
