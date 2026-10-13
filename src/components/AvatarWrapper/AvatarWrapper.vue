@@ -16,7 +16,7 @@
 			:disableTooltip="disableTooltip"
 			disableMenu
 			isNoUser
-			:hideStatus="!showUserStatus"
+			:hideStatus="!showUserStatus || isFederatedUser"
 			:verboseStatus="false"
 			:preloadedUserStatus="preloadedUserStatus ?? {}"
 			:size="size">
@@ -34,11 +34,13 @@
 			:menuContainer="menuContainer"
 			:disableTooltip="disableTooltip"
 			:disableMenu="disableMenu"
-			:hideStatus="!showUserStatus"
+			:hideStatus="!showUserStatus || isFederatedUser"
 			:verboseStatus="!showUserStatusCompact"
 			:preloadedUserStatus="preloadedUserStatus"
 			:size="size" />
-		<!-- Override user status for federated users: the globe still says "federated",
+		<!-- NcAvatar's own status mark is hidden for federated users above: it would sit in the
+		     same corner as this span, and the local user_status API cannot resolve a cloud id.
+		     Override user status for federated users: the globe still says "federated",
 		     its color says whether they are around. No color means unknown, which is
 		     deliberately distinct from offline. -->
 		<span

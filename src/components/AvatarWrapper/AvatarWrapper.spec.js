@@ -171,6 +171,15 @@ describe('AvatarWrapper.vue', () => {
 			expect(label).toBe(t('spreed', 'Federated user'))
 		})
 
+		it('hides the status mark NcAvatar would draw in the badge corner for federated users', () => {
+			// NcAvatar would otherwise paint its own mark where the globe sits
+			expect(mountBadge({ status: 'away' }).findComponent(NcAvatar).props('hideStatus')).toBe(true)
+			const local = mount(AvatarWrapper, {
+				props: { source: ATTENDEE.ACTOR_TYPE.USERS, id: 'bill', name: 'Bill', showUserStatus: true, preloadedUserStatus: { status: 'away' } },
+			})
+			expect(local.findComponent(NcAvatar).props('hideStatus')).toBe(false)
+		})
+
 		it('uses the plain label when there is no status at all', () => {
 			expect(badgeLabel(mountBadge(undefined))).toBe(t('spreed', 'Federated user'))
 			expect(badgeLabel(mountBadge({}))).toBe(t('spreed', 'Federated user'))
