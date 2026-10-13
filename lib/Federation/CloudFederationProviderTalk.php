@@ -694,7 +694,7 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 	private function userStatusRequested(int $remoteAttendeeId, array $notification): array {
 		$invite = $this->getByRemoteAttendeeAndValidate($notification['remoteServerUrl'], $remoteAttendeeId, $notification['sharedSecret']);
 
-		if (!$this->appConfig->getAppValueBool('federation_presence_enabled', true)) {
+		if (!$this->appConfig->getAppValueBool(Config::FEDERATION_PRESENCE_ENABLED, true)) {
 			return [];
 		}
 

@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Service;
 
+use OCA\Talk\CachePrefix;
+use OCA\Talk\Config;
 use OCA\Talk\Federation\BackendNotifier;
 use OCA\Talk\Federation\Presence\FeatureSupport;
 use OCA\Talk\Model\Attendee;
@@ -52,7 +54,7 @@ class FederatedUserStatusService {
 		private readonly IAppConfig $appConfig,
 		ICacheFactory $cacheFactory,
 	) {
-		$this->cache = $cacheFactory->createDistributed('talk/federated-presence');
+		$this->cache = $cacheFactory->createDistributed(CachePrefix::FEDERATED_PRESENCE);
 	}
 
 	/**
@@ -65,7 +67,7 @@ class FederatedUserStatusService {
 	public function getStatuses(Room $room, array $federatedParticipants, bool $cacheOnly = false): array {
 		// The same switch the answering side honors, so one app config turns the feature off on
 		// this server whether it is asking or being asked.
-		if (!$this->appConfig->getAppValueBool('federation_presence_enabled', true)) {
+		if (!$this->appConfig->getAppValueBool(Config::FEDERATION_PRESENCE_ENABLED, true)) {
 			return [];
 		}
 

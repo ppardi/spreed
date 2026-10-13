@@ -28,6 +28,7 @@ use OCP\IUserManager;
 use OCP\Security\ISecureRandom;
 
 class Config {
+	public const FEDERATION_PRESENCE_ENABLED = 'federation_presence_enabled';
 	public const ALLOWED_BACKEND_TIMEOFFSET = 45;
 	public const SIGNALING_INTERNAL = 'internal';
 	public const SIGNALING_EXTERNAL = 'external';

@@ -145,6 +145,9 @@ class CapabilitiesTest extends TestCase {
 				['core', 'backgroundjobs_mode', 'ajax', 'cron'],
 			]);
 
+		$this->appConfig->method('getAppValueBool')
+			->willReturnCallback(static fn (string $key, bool $default = false): bool => $key === 'federation_presence_enabled');
+
 		$this->appConfig->method('getAppValueInt')
 			->willReturnMap([
 				['max_call_duration', 0, 0],
@@ -164,6 +167,7 @@ class CapabilitiesTest extends TestCase {
 					Capabilities::FEATURES, [
 						'message-expiration',
 						'reactions',
+						'federated-user-status',
 					]
 				),
 				'features-local' => Capabilities::LOCAL_FEATURES,
@@ -363,6 +367,7 @@ class CapabilitiesTest extends TestCase {
 			->willReturnMap([
 				['backgrounds_default_for_users', true, true],
 				['backgrounds_upload_users', true, true],
+				['federation_presence_enabled', true, true],
 			]);
 
 		$this->appConfig->method('getAppValueInt')
@@ -391,6 +396,7 @@ class CapabilitiesTest extends TestCase {
 					Capabilities::FEATURES, [
 						'message-expiration',
 						'reactions',
+						'federated-user-status',
 						'chat-summary-api',
 					]
 				),
@@ -636,5 +642,16 @@ class CapabilitiesTest extends TestCase {
 
 		$data = json_decode(json_encode($capabilities->getCapabilities(), JSON_THROW_ON_ERROR), true);
 		$this->assertNotContains('chat-summary-api', $data['spreed']['features']);
+	}
+
+	public function testFederatedUserStatusIsNotAdvertisedWhenDisabled(): void {
+		$capabilities = $this->getCapabilities();
+		$this->appConfig->method('getAppValueBool')
+			->willReturnCallback(static fn (string $key, bool $default = false): bool => $key !== 'federation_presence_enabled' && $default);
+
+		$data = $capabilities->getCapabilities();
+
+		// Clients must not render presence for federated users on a server that will never answer
+		$this->assertNotContains('federated-user-status', $data['spreed']['features']);
 	}
 }

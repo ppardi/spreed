@@ -10,6 +10,7 @@ namespace OCA\Talk;
 
 use OCA\Guests\UserBackend;
 use OCA\Talk\Chat\ChatManager;
+use OCA\Talk\Federation\Presence\FeatureSupport as PresenceFeatureSupport;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Service\LiveTranscriptionService;
 use OCP\App\IAppManager;
@@ -151,6 +152,7 @@ class Capabilities implements IPublicCapability {
 		'chat-summary-api',
 		'call-end-to-end-encryption',
 		'recording-chunked-upload',
+		'federated-user-status',
 	];
 
 	public const LOCAL_FEATURES = [
@@ -363,6 +365,10 @@ class Capabilities implements IPublicCapability {
 
 		if ($this->commentsManager->supportReactions()) {
 			$capabilities['features'][] = 'reactions';
+		}
+
+		if ($this->appConfig->getAppValueBool(Config::FEDERATION_PRESENCE_ENABLED, true)) {
+			$capabilities['features'][] = PresenceFeatureSupport::FEATURE;
 		}
 
 		if ($user instanceof IUser) {

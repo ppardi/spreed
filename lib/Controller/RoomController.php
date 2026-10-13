@@ -1323,7 +1323,12 @@ class RoomController extends AEnvironmentAwareOCSController {
 		$results = $headers = $statuses = [];
 		$maxPingAge = $this->timeFactory->getTime() - Session::SESSION_TIMEOUT_KILL;
 
-		if (($this->userId !== null || $this->federationAuthenticator->isFederationRequest())
+		// The gate below and the service's cacheOnly argument must stay the same condition: a
+		// federated request may read statuses, but must never fetch them, or the host opens a second
+		// OCM round trip inside the one it is answering.
+		$isFederationRequest = $this->federationAuthenticator->isFederationRequest();
+
+		if (($this->userId !== null || $isFederationRequest)
 			&& $includeStatus
 			&& count($participants) < Config::USER_STATUS_INTEGRATION_LIMIT
 			&& $this->appManager->isEnabledForUser('user_status')) {
@@ -1355,7 +1360,7 @@ class RoomController extends AEnvironmentAwareOCSController {
 				$federatedStatuses = $this->federatedUserStatusService->getStatuses(
 					$this->room,
 					$federated,
-					cacheOnly: $this->federationAuthenticator->isFederationRequest(),
+					cacheOnly: $isFederationRequest,
 				);
 			}
 		}

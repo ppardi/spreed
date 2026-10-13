@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Federation;
 
+use OCA\Talk\CachePrefix;
 use OCA\Talk\Federation\Attachments\ServerUrl;
 use OCP\ICache;
 use OCP\ICacheFactory;
@@ -33,7 +34,7 @@ class RemoteProtocolSupport {
 		ICacheFactory $cacheFactory,
 		private readonly LoggerInterface $logger,
 	) {
-		$this->markers = $cacheFactory->createDistributed('talk/remote-protocols');
+		$this->markers = $cacheFactory->createDistributed(CachePrefix::REMOTE_PROTOCOLS);
 	}
 
 	/**
