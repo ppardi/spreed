@@ -66,8 +66,7 @@ class FederatedUserStatusService {
 	/** The remote answered but holds no current status for that user, which is common and not an error */
 	private const UNKNOWN = 'unknown';
 
-	/** Null when this server has no memcache configured */
-	private ?ICache $cache;
+	private ICache $cache;
 
 	public function __construct(
 		private readonly BackendNotifier $backendNotifier,
@@ -76,7 +75,15 @@ class FederatedUserStatusService {
 		private readonly IAppConfig $appConfig,
 		ICacheFactory $cacheFactory,
 	) {
-		$this->cache = $cacheFactory->isAvailable() ? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PRESENCE) : null;
+		// Without a distributed cache the fallback is an in-process one. It still de-duplicates
+		// within one request (several conversations with the same person cost one fetch), but
+		// nothing persists across requests, so each participants request then pays one discovery
+		// and one OCM round trip per remote. federation_presence_enabled is the mitigation for an
+		// admin who cannot afford that. createLocal() is no use here: with no distributed cache
+		// configured core hands out a NullCache for it too.
+		$this->cache = $cacheFactory->isAvailable()
+			? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PRESENCE)
+			: $cacheFactory->createInMemory();
 	}
 
 	/**
@@ -93,14 +100,6 @@ class FederatedUserStatusService {
 			return [];
 		}
 
-		$cache = $this->cache;
-		if ($cache === null) {
-			// Without a memcache every set() is discarded, so none of the TTLs below would exist
-			// and each request would re-probe discovery and ask every remote live, which can be
-			// many seconds inside the participants request. Unknown is rendered safely instead.
-			return [];
-		}
-
 		$statuses = [];
 		/** @var array<string, list<string>> $missingByServer */
 		$missingByServer = [];
@@ -111,7 +110,7 @@ class FederatedUserStatusService {
 			$attendee = $participant->getAttendee();
 			$cloudId = $attendee->getActorId();
 
-			$cached = $cache->get($this->key($cloudId));
+			$cached = $this->cache->get($this->key($cloudId));
 			if (is_array($cached)) {
 				$statuses[$cloudId] = $cached;
 				continue;
@@ -160,19 +159,19 @@ class FederatedUserStatusService {
 				// Rejected the notification type: the server is not upgraded. Feature detection
 				// should have caught this, so this is the belt-and-braces path - back off for an
 				// hour rather than asking again every two minutes.
-				$this->remember($cache, $cloudIds, self::UNSUPPORTED, self::UNSUPPORTED_TTL);
+				$this->remember($cloudIds, self::UNSUPPORTED, self::UNSUPPORTED_TTL);
 				continue;
 			}
 
 			if ($answer === BackendNotifier::USER_STATUSES_REFUSED) {
 				// Reachable and upgraded, but it will not accept our credential. Core throttles
 				// the asker for each such answer, so wait as long as for an un-upgraded server.
-				$this->remember($cache, $cloudIds, self::REFUSED, self::UNSUPPORTED_TTL);
+				$this->remember($cloudIds, self::REFUSED, self::UNSUPPORTED_TTL);
 				continue;
 			}
 
 			if (!is_array($answer)) {
-				$this->remember($cache, $cloudIds, self::UNREACHABLE, self::UNREACHABLE_TTL);
+				$this->remember($cloudIds, self::UNREACHABLE, self::UNREACHABLE_TTL);
 				continue;
 			}
 
@@ -187,7 +186,7 @@ class FederatedUserStatusService {
 					// No usable answer. A user without a current status is simply absent from the
 					// remote's map, so remember that rather than asking again on every request. It
 					// stays out of the result: a missing key is how the UI shows "unknown".
-					$cache->set($this->key($cloudId), self::UNKNOWN, self::TTL);
+					$this->cache->set($this->key($cloudId), self::UNKNOWN, self::TTL);
 					continue;
 				}
 				$icon = $entry['icon'] ?? null;
@@ -196,7 +195,7 @@ class FederatedUserStatusService {
 					'status' => $entry['status'],
 					'icon' => is_string($icon) && $icon !== '' && mb_strlen($icon) <= self::MAX_ICON_LENGTH ? $icon : null,
 				];
-				$cache->set($this->key($cloudId), $value, self::TTL);
+				$this->cache->set($this->key($cloudId), $value, self::TTL);
 				$statuses[$cloudId] = $value;
 			}
 		}
@@ -207,9 +206,9 @@ class FederatedUserStatusService {
 	/**
 	 * @param list<string> $cloudIds
 	 */
-	private function remember(ICache $cache, array $cloudIds, string $marker, int $ttl): void {
+	private function remember(array $cloudIds, string $marker, int $ttl): void {
 		foreach ($cloudIds as $cloudId) {
-			$cache->set($this->key($cloudId), $marker, $ttl);
+			$this->cache->set($this->key($cloudId), $marker, $ttl);
 		}
 	}
 

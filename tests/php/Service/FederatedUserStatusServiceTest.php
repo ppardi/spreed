@@ -33,7 +33,6 @@ class FederatedUserStatusServiceTest extends TestCase {
 	protected Room&MockObject $room;
 	/** @var array<string, array{value: mixed, ttl: int}> */
 	protected array $cached = [];
-	protected bool $cacheAvailable = true;
 	protected FederatedUserStatusService $service;
 
 	public function setUp(): void {
@@ -49,7 +48,7 @@ class FederatedUserStatusServiceTest extends TestCase {
 			return true;
 		});
 		$this->cacheFactory = $this->createMock(ICacheFactory::class);
-		$this->cacheFactory->method('isAvailable')->willReturn($this->cacheAvailable);
+		$this->cacheFactory->method('isAvailable')->willReturn(true);
 		$this->cacheFactory->method('createDistributed')->with('talk/federated-presence')->willReturn($this->cache);
 
 		$this->cloudIdManager = $this->createMock(ICloudIdManager::class);
@@ -115,14 +114,19 @@ class FederatedUserStatusServiceTest extends TestCase {
 		$this->assertSame(['bill@cloud.test' => ['status' => 'away', 'icon' => null]], $result);
 	}
 
-	public function testWithoutAMemcacheNothingIsFetchedAndNothingIsKnown(): void {
-		// A NullCache discards every set(), so the TTLs would not exist and each request would
-		// probe the remote live. Degrading to "unknown" is the safe alternative.
+	public function testWithoutADistributedCacheTheServiceStillWorksFromAnInProcessCache(): void {
+		// Without a distributed cache core hands out a NullCache for createLocal() as well, so the
+		// fallback must be the in-process cache. The feature keeps working, and a second call
+		// within the same request is served without asking the remote again.
 		$cacheFactory = $this->createMock(ICacheFactory::class);
 		$cacheFactory->method('isAvailable')->willReturn(false);
 		$cacheFactory->expects($this->never())->method('createDistributed');
-		$this->featureSupport->expects($this->never())->method('remoteSupports');
-		$this->backendNotifier->expects($this->never())->method('requestUserStatuses');
+		$cacheFactory->expects($this->never())->method('createLocal');
+		$cacheFactory->expects($this->once())->method('createInMemory')->willReturn($this->cache);
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->backendNotifier->expects($this->once())
+			->method('requestUserStatuses')
+			->willReturn(['bill@cloud.test' => ['status' => 'away', 'icon' => null]]);
 
 		$service = new FederatedUserStatusService(
 			$this->backendNotifier,
@@ -131,8 +135,11 @@ class FederatedUserStatusServiceTest extends TestCase {
 			$this->enabledAppConfig(),
 			$cacheFactory,
 		);
+		$participants = [$this->federatedParticipant('bill@cloud.test')];
 
-		$this->assertSame([], $service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]));
+		$expected = ['bill@cloud.test' => ['status' => 'away', 'icon' => null]];
+		$this->assertSame($expected, $service->getStatuses($this->room, $participants));
+		$this->assertSame($expected, $service->getStatuses($this->room, $participants));
 	}
 
 	public function testUnsupportedRemoteIsNeverAsked(): void {
