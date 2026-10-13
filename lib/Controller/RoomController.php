@@ -70,6 +70,7 @@ use OCA\Talk\Service\BanService;
 use OCA\Talk\Service\BreakoutRoomService;
 use OCA\Talk\Service\ChecksumVerificationService;
 use OCA\Talk\Service\ConversationTagService;
+use OCA\Talk\Service\FederatedUserStatusService;
 use OCA\Talk\Service\InvitationService;
 use OCA\Talk\Service\NoteToSelfService;
 use OCA\Talk\Service\ParticipantService;
@@ -170,6 +171,7 @@ class RoomController extends AEnvironmentAwareOCSController {
 		private readonly ConversationTagService $conversationTagService,
 		private readonly DefaultPreset $defaultParameters,
 		private readonly Forced $forcedParameters,
+		private readonly FederatedUserStatusService $federatedUserStatusService,
 		private readonly ?string $userId,
 	) {
 		parent::__construct($appName, $request);
@@ -1337,6 +1339,27 @@ class RoomController extends AEnvironmentAwareOCSController {
 			$headers['X-Nextcloud-Has-User-Statuses'] = true;
 		}
 
+		$federatedStatuses = [];
+		if ($includeStatus
+			&& count($participants) < Config::USER_STATUS_INTEGRATION_LIMIT
+			&& $this->appManager->isEnabledForUser('user_status')) {
+			$federated = array_values(array_filter(
+				$participants,
+				static fn (Participant $participant): bool => $participant->getAttendee()->getActorType() === Attendee::ACTOR_FEDERATED_USERS,
+			));
+			if ($federated !== []) {
+				// A federated request is this server answering another one, which is already
+				// waiting on an OCM round trip. Serving it from cache keeps us from opening a
+				// second one inside the first - in a two-server room, back to the very server
+				// that is waiting for this answer.
+				$federatedStatuses = $this->federatedUserStatusService->getStatuses(
+					$this->room,
+					$federated,
+					cacheOnly: $this->federationAuthenticator->isFederationRequest(),
+				);
+			}
+		}
+
 		$currentUser = null;
 		if ($this->userId !== null) {
 			$currentUser = $this->userManager->get($this->userId);
@@ -1462,6 +1485,22 @@ class RoomController extends AEnvironmentAwareOCSController {
 					$this->participantService->leaveRoomAsSession($this->room, $participant);
 				}
 				$result['displayName'] = $participant->getAttendee()->getDisplayName();
+
+				$cloudId = $participant->getAttendee()->getActorId();
+				if (isset($federatedStatuses[$cloudId])) {
+					$result['status'] = $federatedStatuses[$cloudId]['status'];
+					$result['statusIcon'] = $federatedStatuses[$cloudId]['icon'];
+					// Status messages are not transmitted between servers, but these two keys are
+					// written anyway, as null. The frontend's getPreloadedUserStatus() recognizes a
+					// participants-API row by `'statusMessage' in userData`; without the key it
+					// falls through every branch and returns undefined, so the status would never
+					// reach the avatar however correct this value is.
+					$result['statusMessage'] = null;
+					$result['statusClearAt'] = null;
+				}
+				// No fallback on purpose. A local user without a status is reported offline a few
+				// lines above, but for a federated one that would claim they are away when the
+				// truth is that we could not find out. Absent renders as unknown instead.
 			} elseif ($participant->getAttendee()->getActorType() === Attendee::ACTOR_PHONES) {
 				$result['displayName'] = $participant->getAttendee()->getDisplayName();
 				if ($this->talkConfig->isSIPConfigured()

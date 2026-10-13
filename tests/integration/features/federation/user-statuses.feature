@@ -38,3 +38,22 @@ Feature: federation/user-statuses
       | federated_users | participant1@{$LOCAL_URL} | 1               | ABSENT |
       | users           | participant2              | 3               | away   |
       | users           | participant3              | 3               | dnd    |
+
+  Scenario: A federated participant's status is visible to the host
+    Given user "participant1" creates room "room" (v4)
+      | roomType | 2 |
+      | roomName | room |
+    And user "participant1" adds federated_user "participant2" to room "room" with 200 (v4)
+    And using server "REMOTE"
+    And user "participant2" has the following invitations (v1)
+      | remoteServerUrl | remoteToken | state | inviterCloudId     | inviterDisplayName       |
+      | LOCAL           | room        | 0     | participant1@LOCAL | participant1-displayname |
+    And user "participant2" accepts invite to room "room" of server "LOCAL" with 200 (v1)
+      | id          | name | type | remoteServer | remoteToken |
+      | LOCAL::room | room | 2    | LOCAL        | room        |
+    And user "participant2" set status to "dnd" with 200 (v1)
+    Given using server "LOCAL"
+    Then user "participant1" sees the following attendees with status in room "room" with 200 (v4)
+      | actorType       | actorId                    | participantType | status  |
+      | users           | participant1               | 1               | offline |
+      | federated_users | participant2@{$REMOTE_URL} | 3               | dnd     |
