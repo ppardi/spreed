@@ -445,6 +445,75 @@ class BackendNotifier {
 		return $this->sendUpdateToRemote($remote, $notification);
 	}
 
+	/**
+	 * Ask a remote server for the status of its users in a shared conversation.
+	 * Sent from Host server to Remote participant server.
+	 *
+	 * Unlike the other notifications this one wants an answer, so it reads the 201 body instead of
+	 * only its status code, and it is never queued for retry: a status is a point-in-time value and
+	 * a retry minutes later would be both useless and a row that accumulates.
+	 *
+	 * Returns the statuses, or false when the server rejected the notification type (it is not
+	 * upgraded), or null when it could not be reached, answered unreadably, or rejected the invite.
+	 * The caller caches false for an hour and null for seconds, so the two must not be conflated.
+	 *
+	 * @param list<string> $cloudIds
+	 * @return array<string, array{status: string, icon: ?string}>|false|null
+	 */
+	public function requestUserStatuses(
+		string $remoteServer,
+		int $localAttendeeId,
+		#[SensitiveParameter]
+		string $accessToken,
+		string $localToken,
+		array $cloudIds,
+	): array|false|null {
+		$remote = $this->prepareRemoteUrl($remoteServer);
+
+		$notification = $this->cloudFederationFactory->getCloudFederationNotification();
+		$notification->setMessage(
+			FederationManager::NOTIFICATION_USER_STATUS_REQUEST,
+			FederationManager::TALK_ROOM_RESOURCE,
+			(string)$localAttendeeId,
+			[
+				'remoteServerUrl' => $this->getServerRemoteUrl(),
+				'sharedSecret' => $accessToken,
+				'remoteToken' => $localToken,
+				'cloudIds' => $cloudIds,
+			],
+		);
+
+		try {
+			$response = $this->federationProviderManager->sendCloudNotification($remote, $notification);
+		} catch (OCMProviderException $e) {
+			$this->logger->warning('Could not ask ' . $remote . ' for user statuses', ['exception' => $e]);
+			return null;
+		}
+
+		if ($response->getStatusCode() === Http::STATUS_BAD_REQUEST) {
+			$ocmBody = json_decode((string)$response->getBody(), true) ?? [];
+			if (($ocmBody['message'] ?? '') === FederationManager::OCM_RESOURCE_NOT_FOUND) {
+				// The invite we authenticated with is gone or was replaced on the remote. The
+				// server itself is reachable and may well support presence, so this is transient
+				// and must not be cached as "unsupported" for an hour.
+				$this->logger->warning('Asked ' . $remote . ' for user statuses with an invite it does not know (attendee ' . $localAttendeeId . ')');
+				return null;
+			}
+
+			// Any other 400 is the remote's match statement rejecting a notification type it does
+			// not know, which means it has not been upgraded yet.
+			return false;
+		}
+
+		if ($response->getStatusCode() !== Http::STATUS_CREATED) {
+			$this->logger->warning('Unexpected answer from ' . $remote . ' to a user status request, received status code {code}', ['code' => $response->getStatusCode()]);
+			return null;
+		}
+
+		$decoded = json_decode((string)$response->getBody(), true);
+		return is_array($decoded) ? $decoded : null;
+	}
+
 	protected function sendUpdateToRemote(string $remote, ICloudFederationNotification $notification, int $try = 0, bool $retry = true): ?bool {
 		try {
 			$response = $this->federationProviderManager->sendCloudNotification($remote, $notification);
