@@ -35,6 +35,8 @@ use Psr\Log\LoggerInterface;
 use SensitiveParameter;
 
 class BackendNotifier {
+	/** requestUserStatuses() outcome: the remote refused the credential the request was authenticated with */
+	public const USER_STATUSES_REFUSED = 'refused';
 
 	public function __construct(
 		private readonly ICloudFederationFactory $cloudFederationFactory,
@@ -453,12 +455,18 @@ class BackendNotifier {
 	 * only its status code, and it is never queued for retry: a status is a point-in-time value and
 	 * a retry minutes later would be both useless and a row that accumulates.
 	 *
-	 * Returns the statuses, or false when the server rejected the notification type (it is not
-	 * upgraded), or null when it could not be reached, answered unreadably, or rejected the invite.
-	 * The caller caches false for an hour and null for seconds, so the two must not be conflated.
+	 * There are four outcomes, and the caller backs off differently for each, so they must not be
+	 * conflated:
+	 *  - an array: the statuses the server answered with
+	 *  - false: the server rejected the notification type, so it is not upgraded
+	 *  - USER_STATUSES_REFUSED: the server is reachable and understands the type, but refuses the
+	 *    credential we authenticated with (the invite is gone or was replaced). Core throttles the
+	 *    asker's IP for every such answer, on an action shared by all OCM notifications, so asking
+	 *    again soon is harmful and not merely useless.
+	 *  - null: unreachable, answered unreadably, or failed in a way that may pass
 	 *
 	 * @param list<string> $cloudIds
-	 * @return array<string, array{status: string, icon: ?string}>|false|null
+	 * @return array<string, array{status: string, icon: ?string}>|string|false|null
 	 */
 	public function requestUserStatuses(
 		string $remoteServer,
@@ -467,7 +475,7 @@ class BackendNotifier {
 		string $accessToken,
 		string $localToken,
 		array $cloudIds,
-	): array|false|null {
+	): array|string|false|null {
 		$remote = $this->prepareRemoteUrl($remoteServer);
 
 		$notification = $this->cloudFederationFactory->getCloudFederationNotification();
@@ -490,18 +498,32 @@ class BackendNotifier {
 			return null;
 		}
 
+		if ($response->getStatusCode() === Http::STATUS_FORBIDDEN) {
+			// AuthenticationFailedException on the remote: it does not accept our credential
+			$this->logger->warning('Asked ' . $remote . ' for user statuses and it refused the credential of attendee ' . $localAttendeeId);
+			return self::USER_STATUSES_REFUSED;
+		}
+
 		if ($response->getStatusCode() === Http::STATUS_BAD_REQUEST) {
-			$ocmBody = json_decode((string)$response->getBody(), true) ?? [];
-			if (($ocmBody['message'] ?? '') === FederationManager::OCM_RESOURCE_NOT_FOUND) {
-				// The invite we authenticated with is gone or was replaced on the remote. The
-				// server itself is reachable and may well support presence, so this is transient
-				// and must not be cached as "unsupported" for an hour.
-				$this->logger->warning('Asked ' . $remote . ' for user statuses with an invite it does not know (attendee ' . $localAttendeeId . ')');
+			$ocmBody = json_decode((string)$response->getBody(), true);
+			if (!is_array($ocmBody)) {
+				// Not an OCM error shape, so not the remote's match statement rejecting a type it
+				// does not know: a reverse proxy or maintenance page answering 400 in HTML, say.
+				// That says nothing about the server being un-upgraded.
+				$this->logger->warning('Unreadable 400 answer from ' . $remote . ' to a user status request');
 				return null;
 			}
 
-			// Any other 400 is the remote's match statement rejecting a notification type it does
-			// not know, which means it has not been upgraded yet.
+			if (($ocmBody['message'] ?? '') === FederationManager::OCM_RESOURCE_NOT_FOUND) {
+				// The invite we authenticated with is gone or was replaced on the remote. The
+				// server itself supports presence, so this must not be cached as "unsupported",
+				// but it needs a long back-off all the same.
+				$this->logger->warning('Asked ' . $remote . ' for user statuses with an invite it does not know (attendee ' . $localAttendeeId . ')');
+				return self::USER_STATUSES_REFUSED;
+			}
+
+			// Any other OCM error is the remote's match statement rejecting a notification type it
+			// does not know, which means it has not been upgraded yet.
 			return false;
 		}
 

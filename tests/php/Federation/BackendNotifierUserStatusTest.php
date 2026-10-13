@@ -80,7 +80,7 @@ class BackendNotifierUserStatusTest extends TestCase {
 		$this->federationProviderManager->method('sendCloudNotification')->willThrowException($e);
 	}
 
-	private function request(): array|false|null {
+	private function request(): array|string|false|null {
 		return $this->backendNotifier->requestUserStatuses('https://cloud.test', 7, 'token', 'roomtoken', ['bill@cloud.test']);
 	}
 
@@ -128,12 +128,34 @@ class BackendNotifierUserStatusTest extends TestCase {
 		$this->assertFalse($this->request());
 	}
 
-	public function testReturnsNullWhenTheRemoteRejectsTheInvite(): void {
+	public function testReturnsRefusedWhenTheRemoteDoesNotKnowTheInvite(): void {
 		// Same status code, entirely different cause: the invite we authenticated with is gone or
-		// was replaced. The server is fine and may well support presence, so backing off for an
-		// hour here would blank presence for a healthy server.
+		// was replaced. The server is upgraded, so this is not "unsupported", but core throttles
+		// the asker for each of these, so it is not a 30 second "unreachable" either.
 		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '{"message":"' . FederationManager::OCM_RESOURCE_NOT_FOUND . '"}');
 		$this->logger->expects($this->once())->method('warning');
+
+		$this->assertSame(BackendNotifier::USER_STATUSES_REFUSED, $this->request());
+	}
+
+	public function testReturnsRefusedWhenTheRemoteFailsAuthentication(): void {
+		// AuthenticationFailedException is answered 403 and throttled just like the 400 above
+		$this->givenRemoteResponds(Http::STATUS_FORBIDDEN, '{"message":"' . FederationManager::OCM_RESOURCE_NOT_FOUND . '"}');
+		$this->retryNotificationMapper->expects($this->never())->method('insert');
+
+		$this->assertSame(BackendNotifier::USER_STATUSES_REFUSED, $this->request());
+	}
+
+	public function testReturnsNullForA400ThatIsNotAnOcmErrorShape(): void {
+		// A reverse proxy or maintenance page can answer 400 in HTML. That is not the remote's
+		// match statement rejecting the type, so it must not be cached as "not upgraded" for an hour.
+		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '<html><body>400 Bad Request</body></html>');
+
+		$this->assertNull($this->request());
+	}
+
+	public function testReturnsNullForA400WhoseJsonBodyIsAScalar(): void {
+		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '"Bad Request"');
 
 		$this->assertNull($this->request());
 	}
