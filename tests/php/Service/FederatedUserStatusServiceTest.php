@@ -245,4 +245,65 @@ class FederatedUserStatusServiceTest extends TestCase {
 		// The unsupported server contributes nothing and breaks nothing
 		$this->assertSame(['bill@cloud.test' => ['status' => 'online', 'icon' => null]], $result);
 	}
+
+	public function testAnAskedUserTheRemoteHasNoStatusForIsCachedAsUnknown(): void {
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->backendNotifier->method('requestUserStatuses')->willReturn([
+			'bill@cloud.test' => ['status' => 'online', 'icon' => null],
+		]);
+
+		$result = $this->service->getStatuses($this->room, [
+			$this->federatedParticipant('bill@cloud.test', 1),
+			$this->federatedParticipant('carol@cloud.test', 2),
+		]);
+
+		// Absent from the answer means the remote knows no status; that is remembered for the normal
+		// TTL, but never reported as if it were a status.
+		$this->assertSame(['bill@cloud.test' => ['status' => 'online', 'icon' => null]], $result);
+		$this->assertSame(['value' => 'unknown', 'ttl' => 120], $this->cached[$this->cacheKeyFor('carol@cloud.test')]);
+	}
+
+	public function testAnUnknownCacheEntryIsNotRetriedWithinItsTtl(): void {
+		$this->cached[$this->cacheKeyFor('bill@cloud.test')] = ['value' => 'unknown', 'ttl' => 120];
+		$this->featureSupport->expects($this->never())->method('remoteSupports');
+		$this->backendNotifier->expects($this->never())->method('requestUserStatuses');
+
+		$this->assertSame([], $this->service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]));
+	}
+
+	public function testAnUnsupportedCacheEntryIsNotRetriedWithinItsTtl(): void {
+		$this->cached[$this->cacheKeyFor('bill@cloud.test')] = ['value' => 'unsupported', 'ttl' => 3600];
+		$this->featureSupport->expects($this->never())->method('remoteSupports');
+		$this->backendNotifier->expects($this->never())->method('requestUserStatuses');
+
+		$this->assertSame([], $this->service->getStatuses($this->room, [$this->federatedParticipant('bill@cloud.test')]));
+	}
+
+	public function testMalformedStatusAndIconFromTheRemoteAreNotRelayed(): void {
+		$this->featureSupport->method('remoteSupports')->willReturn(true);
+		$this->backendNotifier->method('requestUserStatuses')->willReturn([
+			'bill@cloud.test' => ['status' => ['nested'], 'icon' => null],
+			'carol@cloud.test' => ['status' => 42, 'icon' => null],
+			'dana@cloud.test' => ['status' => 'online', 'icon' => ['x']],
+			'erin@cloud.test' => ['status' => 'away', 'icon' => 7],
+			'fred@cloud.test' => ['status' => 'dnd', 'icon' => 'zzz'],
+		]);
+
+		$result = $this->service->getStatuses($this->room, [
+			$this->federatedParticipant('bill@cloud.test', 1),
+			$this->federatedParticipant('carol@cloud.test', 2),
+			$this->federatedParticipant('dana@cloud.test', 3),
+			$this->federatedParticipant('erin@cloud.test', 4),
+			$this->federatedParticipant('fred@cloud.test', 5),
+		]);
+
+		// A non-string status is no answer at all; a non-string icon is dropped, not relayed
+		$this->assertSame([
+			'dana@cloud.test' => ['status' => 'online', 'icon' => null],
+			'erin@cloud.test' => ['status' => 'away', 'icon' => null],
+			'fred@cloud.test' => ['status' => 'dnd', 'icon' => 'zzz'],
+		], $result);
+		$this->assertSame('unknown', $this->cached[$this->cacheKeyFor('bill@cloud.test')]['value']);
+		$this->assertSame('unknown', $this->cached[$this->cacheKeyFor('carol@cloud.test')]['value']);
+	}
 }

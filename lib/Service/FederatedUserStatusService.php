@@ -40,6 +40,8 @@ class FederatedUserStatusService {
 
 	private const UNREACHABLE = 'unreachable';
 	private const UNSUPPORTED = 'unsupported';
+	/** The remote answered but holds no current status for that user, which is common and not an error */
+	private const UNKNOWN = 'unknown';
 
 	private ICache $cache;
 
@@ -82,7 +84,7 @@ class FederatedUserStatusService {
 				$statuses[$cloudId] = $cached;
 				continue;
 			}
-			if ($cached === self::UNREACHABLE || $cached === self::UNSUPPORTED) {
+			if ($cached === self::UNREACHABLE || $cached === self::UNSUPPORTED || $cached === self::UNKNOWN) {
 				// Still backing off from that server
 				continue;
 			}
@@ -138,10 +140,16 @@ class FederatedUserStatusService {
 			foreach ($cloudIds as $cloudId) {
 				// Driven by what was asked for, not by what came back, so a remote cannot answer
 				// about users this server never asked about.
-				if (!isset($answer[$cloudId]) || !is_array($answer[$cloudId]) || !isset($answer[$cloudId]['status'])) {
+				$entry = $answer[$cloudId] ?? null;
+				if (!is_array($entry) || !isset($entry['status']) || !is_string($entry['status'])) {
+					// No usable answer. A user without a current status is simply absent from the
+					// remote's map, so remember that rather than asking again on every request. It
+					// stays out of the result: a missing key is how the UI shows "unknown".
+					$this->cache->set($this->key($cloudId), self::UNKNOWN, self::TTL);
 					continue;
 				}
-				$value = ['status' => (string)$answer[$cloudId]['status'], 'icon' => $answer[$cloudId]['icon'] ?? null];
+				$icon = $entry['icon'] ?? null;
+				$value = ['status' => $entry['status'], 'icon' => is_string($icon) ? $icon : null];
 				$this->cache->set($this->key($cloudId), $value, self::TTL);
 				$statuses[$cloudId] = $value;
 			}
