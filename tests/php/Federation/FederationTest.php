@@ -47,6 +47,7 @@ use OCP\IUser;
 use OCP\IUserManager;
 use OCP\Notification\IManager as INotificationManager;
 use OCP\Notification\INotification;
+use OCP\UserStatus\IManager as IUserStatusManager;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
 use Test\TestCase;
@@ -137,6 +138,7 @@ class FederationTest extends TestCase {
 			$this->userConverter,
 			$this->timeFactory,
 			$this->cacheFactory,
+			$this->createMock(IUserStatusManager::class),
 		);
 	}
 

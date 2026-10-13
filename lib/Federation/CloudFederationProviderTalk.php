@@ -59,10 +59,18 @@ use OCP\IUser;
 use OCP\IUserManager;
 use OCP\Notification\IManager as INotificationManager;
 use OCP\Share\Exceptions\ShareNotFound;
+use OCP\UserStatus\IManager as IUserStatusManager;
+use OCP\UserStatus\IUserStatus;
 use Psr\Log\LoggerInterface;
 use SensitiveParameter;
 
 class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCloudFederationProvider {
+	/**
+	 * Maximum number of users one request may ask about. A real asking server only ever asks about
+	 * the participants it shares the room with, so this bounds a malformed or hostile request.
+	 */
+	private const MAX_STATUS_REQUEST_SIZE = 200;
+
 	protected ?ICache $proxyCacheMessages;
 
 	public function __construct(
@@ -87,6 +95,7 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 		private readonly UserConverter $userConverter,
 		private readonly ITimeFactory $timeFactory,
 		ICacheFactory $cacheFactory,
+		private readonly IUserStatusManager $statusManager,
 	) {
 		$this->proxyCacheMessages = $cacheFactory->isAvailable() ? $cacheFactory->createDistributed(CachePrefix::FEDERATED_PCM) : null;
 	}
@@ -196,6 +205,8 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 
 	/**
 	 * @inheritDoc
+	 * @return array<array-key, mixed> The OCM notification response; USER_STATUS_REQUEST answers with a map of arrays
+	 * @psalm-suppress LessSpecificImplementedReturnType The interface documents array<string>, but the response body is arbitrary JSON
 	 */
 	#[\Override]
 	public function notificationReceived($notificationType, $providerId, array $notification): array {
@@ -209,6 +220,7 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 			FederationManager::NOTIFICATION_PARTICIPANT_MODIFIED => $this->participantModified((int)$providerId, $notification),
 			FederationManager::NOTIFICATION_ROOM_MODIFIED => $this->roomModified((int)$providerId, $notification),
 			FederationManager::NOTIFICATION_MESSAGE_POSTED => $this->messagePosted((int)$providerId, $notification),
+			FederationManager::NOTIFICATION_USER_STATUS_REQUEST => $this->userStatusRequested((int)$providerId, $notification),
 			default => throw new BadRequestException([$notificationType]),
 		};
 	}
@@ -662,6 +674,98 @@ class CloudFederationProviderTalk implements ICloudFederationProvider, ISignedCl
 			throw new AuthenticationFailedException();
 		}
 		return $attendee;
+	}
+
+	/**
+	 * Answers which of the given users are currently available, for a server that shares a
+	 * conversation with them.
+	 *
+	 * Returns a map of the cloud id exactly as it was asked for to {status, icon}. A user is
+	 * absent from the map when we have no status for them; INVISIBLE is reported as offline,
+	 * because absent means "unknown" on the asking side and would reveal that a status is
+	 * being withheld.
+	 *
+	 * @param array{remoteServerUrl: string, sharedSecret: string, remoteToken: string, cloudIds?: list<string>} $notification
+	 * @return array<string, array{status: string, icon: ?string}>
+	 * @throws ActionNotSupportedException
+	 * @throws AuthenticationFailedException
+	 * @throws ShareNotFound
+	 */
+	private function userStatusRequested(int $remoteAttendeeId, array $notification): array {
+		$invite = $this->getByRemoteAttendeeAndValidate($notification['remoteServerUrl'], $remoteAttendeeId, $notification['sharedSecret']);
+
+		if (!$this->appConfig->getAppValueBool('federation_presence_enabled', true)) {
+			return [];
+		}
+
+		$requested = $notification['cloudIds'] ?? [];
+		if (!is_array($requested) || $requested === []) {
+			return [];
+		}
+		$requested = array_slice(array_values($requested), 0, self::MAX_STATUS_REQUEST_SIZE);
+
+		try {
+			$room = $this->manager->getRoomById($invite->getLocalRoomId());
+		} catch (RoomNotFoundException) {
+			throw new ShareNotFound(FederationManager::OCM_RESOURCE_NOT_FOUND);
+		}
+
+		// Sanity check to make sure the room is a remote room, as the other handlers do: an invite
+		// always belongs to our copy of someone else's conversation, never to one of our own.
+		if (!$room->isFederatedConversation()) {
+			throw new ShareNotFound(FederationManager::OCM_RESOURCE_NOT_FOUND);
+		}
+
+		// Only users who are in the very room this invite belongs to may be asked about, so a
+		// single valid invite cannot be used to read presence across the rest of the server.
+		$members = [];
+		foreach ($this->participantService->getParticipantsByActorType($room, Attendee::ACTOR_USERS) as $participant) {
+			$members[$participant->getAttendee()->getActorId()] = true;
+		}
+
+		$wanted = [];
+		foreach ($requested as $cloudId) {
+			if (!is_string($cloudId)) {
+				continue;
+			}
+			try {
+				$userId = $this->cloudIdManager->resolveCloudId($cloudId)->getUser();
+			} catch (\InvalidArgumentException) {
+				continue;
+			}
+
+			// The asking server spells the cloud id the way its own copy stores it, so the user
+			// part can differ in case from the local account. getUID() is the canonical spelling
+			// that attendee rows and user_status use; without resolving it first, a mere case
+			// difference would be indistinguishable from "that user is not in this room".
+			$user = $this->userManager->get($userId);
+			if ($user === null) {
+				continue;
+			}
+
+			if (isset($members[$user->getUID()])) {
+				$wanted[$user->getUID()] = $cloudId;
+			}
+		}
+
+		if ($wanted === []) {
+			return [];
+		}
+
+		$result = [];
+		foreach ($this->statusManager->getUserStatuses(array_keys($wanted)) as $userId => $status) {
+			if (!isset($wanted[$userId])) {
+				continue;
+			}
+			$value = $status->getStatus();
+			if ($value === IUserStatus::INVISIBLE) {
+				$result[$wanted[$userId]] = ['status' => IUserStatus::OFFLINE, 'icon' => null];
+				continue;
+			}
+			$result[$wanted[$userId]] = ['status' => $value, 'icon' => $status->getIcon()];
+		}
+
+		return $result;
 	}
 
 	/**
