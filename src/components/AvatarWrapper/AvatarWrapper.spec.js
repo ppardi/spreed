@@ -131,4 +131,21 @@ describe('AvatarWrapper.vue', () => {
 			expect(avatar.text()).toBe(result)
 		})
 	})
+
+	describe('federation badge presence', () => {
+		it('tints the federation badge with the presence status', () => {
+			const wrapper = mount(AvatarWrapper, {
+				props: { source: ATTENDEE.ACTOR_TYPE.FEDERATED_USERS, id: 'bill@cloud.test', name: 'Bill', showUserStatus: true, preloadedUserStatus: { status: 'away' } },
+			})
+			expect(wrapper.find('.avatar-wrapper__user-status').classes()).toContain('avatar-wrapper__user-status--away')
+		})
+
+		it('leaves the badge untinted when the status is unknown', () => {
+			const wrapper = mount(AvatarWrapper, {
+				props: { source: ATTENDEE.ACTOR_TYPE.FEDERATED_USERS, id: 'bill@cloud.test', name: 'Bill', showUserStatus: true },
+			})
+			const classes = wrapper.find('.avatar-wrapper__user-status').classes()
+			expect(classes.some((c) => c.startsWith('avatar-wrapper__user-status--'))).toBe(false)
+		})
+	})
 })

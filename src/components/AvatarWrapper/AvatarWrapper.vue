@@ -38,13 +38,16 @@
 			:verboseStatus="!showUserStatusCompact"
 			:preloadedUserStatus="preloadedUserStatus"
 			:size="size" />
-		<!-- Override user status for federated users -->
+		<!-- Override user status for federated users: the globe still says "federated",
+		     its color says whether they are around. No color means unknown, which is
+		     deliberately distinct from offline. -->
 		<span
 			v-if="showUserStatus && isFederatedUser"
 			class="avatar-wrapper__user-status"
+			:class="federatedStatusClass"
 			role="img"
 			aria-hidden="false"
-			:aria-label="t('spreed', 'Federated user')">
+			:aria-label="federatedStatusLabel">
 			<WebIcon :size="14" />
 		</span>
 		<NcLoadingIcon
@@ -229,6 +232,18 @@ export default {
 			return this.source === ATTENDEE.ACTOR_TYPE.FEDERATED_USERS
 		},
 
+		federatedStatusClass() {
+			const status = this.preloadedUserStatus?.status
+			return status ? `avatar-wrapper__user-status--${status}` : null
+		},
+
+		federatedStatusLabel() {
+			const status = this.preloadedUserStatus?.status
+			return status
+				? t('spreed', 'Federated user — {status}', { status })
+				: t('spreed', 'Federated user')
+		},
+
 		isBot() {
 			return this.source === ATTENDEE.ACTOR_TYPE.BOTS && this.id !== ATTENDEE.CHANGELOG_BOT_ID && this.id !== ATTENDEE.SAMPLE_BOT_ID
 		},
@@ -349,6 +364,24 @@ export default {
 		border: 2px solid var(--color-main-background);
 		background-color: var(--color-main-background);
 		border-radius: 50%;
+
+		// The globe's shape says "federated"; its color says whether they are around.
+		// No modifier means unknown, which must stay distinct from offline.
+		&--online {
+			color: var(--color-success-text);
+		}
+
+		&--away {
+			color: var(--color-warning-text);
+		}
+
+		&--dnd {
+			color: var(--color-error-text);
+		}
+
+		&--offline {
+			color: var(--color-text-maxcontrast);
+		}
 	}
 }
 
