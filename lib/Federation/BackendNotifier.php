@@ -514,10 +514,17 @@ class BackendNotifier {
 				return null;
 			}
 
-			if (($ocmBody['message'] ?? '') === FederationManager::OCM_RESOURCE_NOT_FOUND) {
+			if (($ocmBody['message'] ?? '') === FederationManager::OCM_RESOURCE_NOT_FOUND
+				&& empty($ocmBody['validationErrors'])) {
 				// The invite we authenticated with is gone or was replaced on the remote. The
 				// server itself supports presence, so this must not be cached as "unsupported",
 				// but it needs a long back-off all the same.
+				//
+				// The message alone cannot establish this: BadRequestException::getReturnMessage()
+				// hardcodes the same RESOURCE_NOT_FOUND an un-upgraded server answers with, and
+				// only populates validationErrors with the notification type it did not recognise.
+				// Core answers ShareNotFound with an empty validationErrors, so that is the
+				// discriminator.
 				$this->logger->warning('Asked ' . $remote . ' for user statuses with an invite it does not know (attendee ' . $localAttendeeId . ')');
 				return self::USER_STATUSES_REFUSED;
 			}

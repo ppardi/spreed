@@ -120,9 +120,12 @@ class BackendNotifierUserStatusTest extends TestCase {
 
 	public function testReturnsFalseWhenTheRemoteRejectsTheNotificationType(): void {
 		// An un-upgraded server does not know this notification type, so its match statement
-		// throws BadRequestException and the OCM endpoint answers 400 naming the type. That is
+		// throws BadRequestException([$notificationType]). Core answers that with
+		// BadRequestException::getReturnMessage(), which hardcodes message RESOURCE_NOT_FOUND and
+		// names the type in validationErrors -- so the message alone cannot tell this apart from a
+		// stale invite, and only the non-empty validationErrors identifies it. That is
 		// "unsupported", which the caller caches for an hour.
-		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '{"message":"USER_STATUS_REQUEST"}');
+		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '{"message":"' . FederationManager::OCM_RESOURCE_NOT_FOUND . '","validationErrors":[{"name":"' . FederationManager::NOTIFICATION_USER_STATUS_REQUEST . '","message":"NOT_FOUND"}]}');
 		$this->retryNotificationMapper->expects($this->never())->method('insert');
 
 		$this->assertFalse($this->request());
@@ -132,7 +135,8 @@ class BackendNotifierUserStatusTest extends TestCase {
 		// Same status code, entirely different cause: the invite we authenticated with is gone or
 		// was replaced. The server is upgraded, so this is not "unsupported", but core throttles
 		// the asker for each of these, so it is not a 30 second "unreachable" either.
-		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '{"message":"' . FederationManager::OCM_RESOURCE_NOT_FOUND . '"}');
+		// Core answers ShareNotFound with the same message but an empty validationErrors.
+		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '{"message":"' . FederationManager::OCM_RESOURCE_NOT_FOUND . '","validationErrors":[]}');
 		$this->logger->expects($this->once())->method('warning');
 
 		$this->assertSame(BackendNotifier::USER_STATUSES_REFUSED, $this->request());
