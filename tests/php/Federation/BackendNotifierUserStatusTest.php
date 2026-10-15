@@ -131,6 +131,17 @@ class BackendNotifierUserStatusTest extends TestCase {
 		$this->assertFalse($this->request());
 	}
 
+	public function testReturnsNullForA400ThatDoesNotNameOurNotificationType(): void {
+		// A 400 we cannot explain must not be read as "this server is not upgraded". That verdict
+		// costs the caller an hour of silence for every user on that server, so it is reserved for
+		// a remote that actually named our notification type as the thing it did not recognise.
+		// Anything else -- a transient fault during an upgrade, a proxy, a validation error about
+		// some other field -- gets the short unreachable back-off instead.
+		$this->givenRemoteResponds(Http::STATUS_BAD_REQUEST, '{"message":"' . FederationManager::OCM_RESOURCE_NOT_FOUND . '","validationErrors":[{"name":"sharedSecret","message":"NOT_FOUND"}]}');
+
+		$this->assertNull($this->request());
+	}
+
 	public function testReturnsRefusedWhenTheRemoteDoesNotKnowTheInvite(): void {
 		// Same status code, entirely different cause: the invite we authenticated with is gone or
 		// was replaced. The server is upgraded, so this is not "unsupported", but core throttles

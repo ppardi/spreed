@@ -505,7 +505,9 @@ class BackendNotifier {
 		}
 
 		if ($response->getStatusCode() === Http::STATUS_BAD_REQUEST) {
-			$ocmBody = json_decode((string)$response->getBody(), true);
+			// Read once: the body is a stream, and a second read returns an empty string
+			$body = mb_substr((string)$response->getBody(), 0, 500);
+			$ocmBody = json_decode($body, true);
 			if (!is_array($ocmBody)) {
 				// Not an OCM error shape, so not the remote's match statement rejecting a type it
 				// does not know: a reverse proxy or maintenance page answering 400 in HTML, say.
@@ -529,20 +531,27 @@ class BackendNotifier {
 				return self::USER_STATUSES_REFUSED;
 			}
 
-			// Any other OCM error is the remote's match statement rejecting a notification type it
-			// does not know, which means it has not been upgraded yet.
-			//
-			// DIAGNOSTIC (25.99.9): this conclusion is reached silently and the caller then backs
-			// off for an hour, so a wrong one is invisible. Log what the remote actually said.
-			$this->logger->warning(
-				'Concluded that {remote} does not support user status requests, from a 400 saying {body} (attendee {attendee})',
+			// "Not upgraded" is only concluded when the remote names OUR notification type as the
+			// thing it did not recognise, which is what BadRequestException([$notificationType])
+			// produces. That verdict costs the caller an hour of silence for every user on that
+			// server, so an unexplained 400 must not earn it: a transient fault while the remote
+			// is being upgraded would otherwise blank out presence long after it came back.
+			foreach ((array)($ocmBody['validationErrors'] ?? []) as $validationError) {
+				if (is_array($validationError)
+					&& ($validationError['name'] ?? '') === FederationManager::NOTIFICATION_USER_STATUS_REQUEST) {
+					return false;
+				}
+			}
+
+			$this->logger->debug(
+				'Unexplained 400 from {remote} to a user status request, treating it as a transient failure rather than an un-upgraded server: {body} (attendee {attendee})',
 				[
 					'remote' => $remote,
-					'body' => mb_substr((string)$response->getBody(), 0, 500),
+					'body' => $body,
 					'attendee' => $localAttendeeId,
 				],
 			);
-			return false;
+			return null;
 		}
 
 		if ($response->getStatusCode() !== Http::STATUS_CREATED) {
@@ -550,16 +559,18 @@ class BackendNotifier {
 			return null;
 		}
 
-		$decoded = json_decode((string)$response->getBody(), true);
-		// DIAGNOSTIC (25.99.9): a 201 answering about nobody looks exactly like no request at all
-		// from the caller's side, because both end as an absent status.
-		$this->logger->warning(
+		// Read once: the body is a stream and a second read returns an empty string
+		$body = mb_substr((string)$response->getBody(), 0, 500);
+		$decoded = json_decode($body, true);
+		// A 201 answering about nobody looks exactly like no request at all from the caller's
+		// side, because both end as an absent status. Keep them apart in the log.
+		$this->logger->debug(
 			'Asked {remote} for {asked} user statuses and it answered about {answered}: {body}',
 			[
 				'remote' => $remote,
 				'asked' => count($cloudIds),
 				'answered' => is_array($decoded) ? count($decoded) : -1,
-				'body' => mb_substr((string)$response->getBody(), 0, 500),
+				'body' => $body,
 			],
 		);
 		return is_array($decoded) ? $decoded : null;

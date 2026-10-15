@@ -55,6 +55,11 @@ class FederatedUserStatusService {
 		IUserStatus::ONLINE,
 		IUserStatus::AWAY,
 		IUserStatus::DND,
+		// Talk sets busy for the duration of a call and the calendar integration sets it for a
+		// meeting, so it reaches a remote as often as the others. INVISIBLE is the only status
+		// deliberately missing: the answering side maps it to OFFLINE before it leaves, so seeing
+		// it here would mean a remote is telling us something it should not.
+		IUserStatus::BUSY,
 		IUserStatus::OFFLINE,
 	];
 
@@ -146,10 +151,9 @@ class FederatedUserStatusService {
 			if ($supports !== true) {
 				// Not advertising the protocol, or not reachable enough to tell. FeatureSupport
 				// owns the back-off for both; asking anyway would pay its timeout again.
-				//
-				// DIAGNOSTIC (25.99.9): skipped silently, which is indistinguishable from the
-				// request being made and answering about nobody.
-				$this->logger->warning(
+				// Skipped silently otherwise, which is indistinguishable from the request being
+				// made and answering about nobody.
+				$this->logger->debug(
 					'Not asking {server} for user statuses: remoteSupports() returned {supports}',
 					['server' => $server, 'supports' => var_export($supports, true)],
 				);
@@ -170,8 +174,8 @@ class FederatedUserStatusService {
 				// should have caught this, so this is the belt-and-braces path - back off for an
 				// hour rather than asking again every two minutes.
 				//
-				// DIAGNOSTIC (25.99.9): an hour of silence starts here.
-				$this->logger->warning(
+				// An hour of silence starts here.
+				$this->logger->debug(
 					'Caching {server} as unsupported for user statuses for {ttl}s, affecting {count} cloud ids',
 					['server' => $server, 'ttl' => self::UNSUPPORTED_TTL, 'count' => count($cloudIds)],
 				);
@@ -202,8 +206,8 @@ class FederatedUserStatusService {
 					// No usable answer. A user without a current status is simply absent from the
 					// remote's map, so remember that rather than asking again on every request. It
 					// stays out of the result: a missing key is how the UI shows "unknown".
-					// DIAGNOSTIC (25.99.9): the remote answered, but not about this user.
-					$this->logger->warning(
+					// The remote answered, but not about this user.
+					$this->logger->debug(
 						'No usable status for {cloudId} in the answer from {server}: {entry}',
 						['cloudId' => $cloudId, 'server' => $server, 'entry' => var_export($entry, true)],
 					);

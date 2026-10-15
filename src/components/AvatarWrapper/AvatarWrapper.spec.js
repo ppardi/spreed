@@ -156,6 +156,7 @@ describe('AvatarWrapper.vue', () => {
 			['online', 'Online'],
 			['away', 'Away'],
 			['dnd', 'Do not disturb'],
+			['busy', 'Busy'],
 			['offline', 'Offline'],
 		])('labels a %s badge with the translated status, not the raw token', (status, word) => {
 			const label = badgeLabel(mountBadge({ status }))

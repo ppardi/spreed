@@ -99,3 +99,58 @@ Feature: federation/user-statuses
       | actorType       | actorId                    | participantType | status  |
       | users           | participant1               | 1               | offline |
       | federated_users | participant2@{$REMOTE_URL} | 3               | offline |
+
+  Scenario: Two federated participants on the same server both get a status
+    # Regression: the host grouped missing users by SERVER and authenticated the whole batch with
+    # one attendee's invite. The remote resolves the room from that invite, and the invite belongs
+    # to one user's copy of the conversation whose only local member is that user, so every other
+    # user from the same server was silently dropped. Every earlier scenario had exactly one
+    # federated user per remote server, which made the defect unexpressible.
+    Given user "participant1" creates room "room" (v4)
+      | roomType | 2 |
+      | roomName | room |
+    And user "participant1" adds federated_user "participant2" to room "room" with 200 (v4)
+    And user "participant1" adds federated_user "participant3" to room "room" with 200 (v4)
+    And using server "REMOTE"
+    And user "participant2" has the following invitations (v1)
+      | remoteServerUrl | remoteToken | state | inviterCloudId     | inviterDisplayName       |
+      | LOCAL           | room        | 0     | participant1@LOCAL | participant1-displayname |
+    And user "participant2" accepts invite to room "room" of server "LOCAL" with 200 (v1)
+      | id          | name | type | remoteServer | remoteToken |
+      | LOCAL::room | room | 2    | LOCAL        | room        |
+    And user "participant2" set status to "dnd" with 200 (v1)
+    And user "participant3" has the following invitations (v1)
+      | remoteServerUrl | remoteToken | state | inviterCloudId     | inviterDisplayName       |
+      | LOCAL           | room        | 0     | participant1@LOCAL | participant1-displayname |
+    And user "participant3" accepts invite to room "room" of server "LOCAL" with 200 (v1)
+      | id          | name | type | remoteServer | remoteToken |
+      | LOCAL::room | room | 2    | LOCAL        | room        |
+    And user "participant3" set status to "away" with 200 (v1)
+    Given using server "LOCAL"
+    Then user "participant1" sees the following attendees with status in room "room" with 200 (v4)
+      | actorType       | actorId                    | participantType | status  |
+      | users           | participant1               | 1               | offline |
+      | federated_users | participant2@{$REMOTE_URL} | 3               | dnd     |
+      | federated_users | participant3@{$REMOTE_URL} | 3               | away    |
+
+  Scenario: A busy federated participant reads as busy, not as unknown
+    # Regression: the host accepted only online/away/dnd/offline and discarded anything else as
+    # unusable, so busy -- which Talk sets for the duration of a call and the calendar integration
+    # sets for a meeting -- arrived and was thrown away, leaving an untinted globe.
+    Given user "participant1" creates room "room" (v4)
+      | roomType | 2 |
+      | roomName | room |
+    And user "participant1" adds federated_user "participant2" to room "room" with 200 (v4)
+    And using server "REMOTE"
+    And user "participant2" has the following invitations (v1)
+      | remoteServerUrl | remoteToken | state | inviterCloudId     | inviterDisplayName       |
+      | LOCAL           | room        | 0     | participant1@LOCAL | participant1-displayname |
+    And user "participant2" accepts invite to room "room" of server "LOCAL" with 200 (v1)
+      | id          | name | type | remoteServer | remoteToken |
+      | LOCAL::room | room | 2    | LOCAL        | room        |
+    And user "participant2" set status to "busy" with 200 (v1)
+    Given using server "LOCAL"
+    Then user "participant1" sees the following attendees with status in room "room" with 200 (v4)
+      | actorType       | actorId                    | participantType | status  |
+      | users           | participant1               | 1               | offline |
+      | federated_users | participant2@{$REMOTE_URL} | 3               | busy    |

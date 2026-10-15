@@ -245,6 +245,7 @@ export default {
 				online: t('spreed', 'Online'),
 				away: t('spreed', 'Away'),
 				dnd: t('spreed', 'Do not disturb'),
+				busy: t('spreed', 'Busy'),
 				offline: t('spreed', 'Offline'),
 			}
 			const token = this.preloadedUserStatus?.status
@@ -393,7 +394,8 @@ export default {
 			color: var(--user-status-color-away, #C88800);
 		}
 
-		&--dnd {
+		&--dnd,
+		&--busy {
 			color: var(--user-status-color-busy, #DB0606);
 		}
 

@@ -21,8 +21,8 @@ use OCP\Federation\ICloudId;
 use OCP\Federation\ICloudIdManager;
 use OCP\ICache;
 use OCP\ICacheFactory;
-use Psr\Log\LoggerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
+use Psr\Log\LoggerInterface;
 use Test\TestCase;
 
 class FederatedUserStatusServiceTest extends TestCase {
@@ -364,6 +364,9 @@ class FederatedUserStatusServiceTest extends TestCase {
 			'b@cloud.test' => ['status' => 'away', 'icon' => null],
 			'c@cloud.test' => ['status' => 'dnd', 'icon' => null],
 			'd@cloud.test' => ['status' => 'offline', 'icon' => null],
+			// Talk sets busy during a call and the calendar integration sets it for a meeting, so
+			// it is as real as the other four and must survive the trip
+			'i@cloud.test' => ['status' => 'busy', 'icon' => null],
 			// The answering side maps invisible to offline, so it must never arrive
 			'e@cloud.test' => ['status' => 'invisible', 'icon' => null],
 			// Interpolated into a CSS class by the frontend, so anything else is refused here
@@ -372,14 +375,14 @@ class FederatedUserStatusServiceTest extends TestCase {
 			'h@cloud.test' => ['status' => '', 'icon' => null],
 		]);
 
-		$ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+		$ids = ['a', 'b', 'c', 'd', 'i', 'e', 'f', 'g', 'h'];
 		$result = $this->service->getStatuses($this->room, array_map(
 			fn (string $id, int $i): Participant => $this->federatedParticipant($id . '@cloud.test', $i + 1),
 			$ids,
 			array_keys($ids),
 		));
 
-		$this->assertSame(['a@cloud.test', 'b@cloud.test', 'c@cloud.test', 'd@cloud.test'], array_keys($result));
+		$this->assertSame(['a@cloud.test', 'b@cloud.test', 'c@cloud.test', 'd@cloud.test', 'i@cloud.test'], array_keys($result));
 		foreach (['e', 'f', 'g', 'h'] as $id) {
 			// An unaccepted status takes the "no usable answer" path
 			$this->assertSame('unknown', $this->cached[$this->cacheKeyFor($id . '@cloud.test')]['value']);
