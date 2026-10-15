@@ -22,6 +22,7 @@ use OCP\Federation\ICloudIdManager;
 use OCP\ICache;
 use OCP\ICacheFactory;
 use OCP\UserStatus\IUserStatus;
+use Psr\Log\LoggerInterface;
 
 /**
  * The statuses of federated participants, as the server hosting the conversation sees them.
@@ -73,6 +74,7 @@ class FederatedUserStatusService {
 		private readonly FeatureSupport $featureSupport,
 		private readonly ICloudIdManager $cloudIdManager,
 		private readonly IAppConfig $appConfig,
+		private readonly LoggerInterface $logger,
 		ICacheFactory $cacheFactory,
 	) {
 		// Without a distributed cache the fallback is an in-process one. It still de-duplicates
@@ -140,9 +142,17 @@ class FederatedUserStatusService {
 		}
 
 		foreach ($missingByServer as $server => $cloudIds) {
-			if ($this->featureSupport->remoteSupports($server) !== true) {
+			$supports = $this->featureSupport->remoteSupports($server);
+			if ($supports !== true) {
 				// Not advertising the protocol, or not reachable enough to tell. FeatureSupport
 				// owns the back-off for both; asking anyway would pay its timeout again.
+				//
+				// DIAGNOSTIC (25.99.9): skipped silently, which is indistinguishable from the
+				// request being made and answering about nobody.
+				$this->logger->warning(
+					'Not asking {server} for user statuses: remoteSupports() returned {supports}',
+					['server' => $server, 'supports' => var_export($supports, true)],
+				);
 				continue;
 			}
 
@@ -159,6 +169,12 @@ class FederatedUserStatusService {
 				// Rejected the notification type: the server is not upgraded. Feature detection
 				// should have caught this, so this is the belt-and-braces path - back off for an
 				// hour rather than asking again every two minutes.
+				//
+				// DIAGNOSTIC (25.99.9): an hour of silence starts here.
+				$this->logger->warning(
+					'Caching {server} as unsupported for user statuses for {ttl}s, affecting {count} cloud ids',
+					['server' => $server, 'ttl' => self::UNSUPPORTED_TTL, 'count' => count($cloudIds)],
+				);
 				$this->remember($cloudIds, self::UNSUPPORTED, self::UNSUPPORTED_TTL);
 				continue;
 			}
@@ -186,6 +202,11 @@ class FederatedUserStatusService {
 					// No usable answer. A user without a current status is simply absent from the
 					// remote's map, so remember that rather than asking again on every request. It
 					// stays out of the result: a missing key is how the UI shows "unknown".
+					// DIAGNOSTIC (25.99.9): the remote answered, but not about this user.
+					$this->logger->warning(
+						'No usable status for {cloudId} in the answer from {server}: {entry}',
+						['cloudId' => $cloudId, 'server' => $server, 'entry' => var_export($entry, true)],
+					);
 					$this->cache->set($this->key($cloudId), self::UNKNOWN, self::TTL);
 					continue;
 				}

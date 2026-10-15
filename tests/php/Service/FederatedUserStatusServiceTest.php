@@ -21,6 +21,7 @@ use OCP\Federation\ICloudId;
 use OCP\Federation\ICloudIdManager;
 use OCP\ICache;
 use OCP\ICacheFactory;
+use Psr\Log\LoggerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use Test\TestCase;
 
@@ -83,6 +84,7 @@ class FederatedUserStatusServiceTest extends TestCase {
 			$this->featureSupport,
 			$this->cloudIdManager,
 			$appConfig,
+			$this->createMock(LoggerInterface::class),
 			$this->cacheFactory,
 		);
 	}
@@ -133,6 +135,7 @@ class FederatedUserStatusServiceTest extends TestCase {
 			$this->featureSupport,
 			$this->cloudIdManager,
 			$this->enabledAppConfig(),
+			$this->createMock(LoggerInterface::class),
 			$cacheFactory,
 		);
 		$participants = [$this->federatedParticipant('bill@cloud.test')];

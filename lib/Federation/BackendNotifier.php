@@ -531,6 +531,17 @@ class BackendNotifier {
 
 			// Any other OCM error is the remote's match statement rejecting a notification type it
 			// does not know, which means it has not been upgraded yet.
+			//
+			// DIAGNOSTIC (25.99.9): this conclusion is reached silently and the caller then backs
+			// off for an hour, so a wrong one is invisible. Log what the remote actually said.
+			$this->logger->warning(
+				'Concluded that {remote} does not support user status requests, from a 400 saying {body} (attendee {attendee})',
+				[
+					'remote' => $remote,
+					'body' => mb_substr((string)$response->getBody(), 0, 500),
+					'attendee' => $localAttendeeId,
+				],
+			);
 			return false;
 		}
 
@@ -540,6 +551,17 @@ class BackendNotifier {
 		}
 
 		$decoded = json_decode((string)$response->getBody(), true);
+		// DIAGNOSTIC (25.99.9): a 201 answering about nobody looks exactly like no request at all
+		// from the caller's side, because both end as an absent status.
+		$this->logger->warning(
+			'Asked {remote} for {asked} user statuses and it answered about {answered}: {body}',
+			[
+				'remote' => $remote,
+				'asked' => count($cloudIds),
+				'answered' => is_array($decoded) ? count($decoded) : -1,
+				'body' => mb_substr((string)$response->getBody(), 0, 500),
+			],
+		);
 		return is_array($decoded) ? $decoded : null;
 	}
 
