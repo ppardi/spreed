@@ -56,10 +56,14 @@ class Participants extends Base {
 	 * back. Mirrors ParticipantService::getLastCommonReadChatMessage(): users and federated users
 	 * whose read privacy is public.
 	 *
+	 * Nobody is "holding" anything when the marker has reached the last message: everyone counted
+	 * is simply up to date. Flagging them anyway would accuse whoever happens to be level with the
+	 * newest message, which is the opposite of what this command is for.
+	 *
 	 * @param list<array{actor_type: string, read_privacy: int, last_read_message: int, ...}> $attendees
-	 * @return array{counted: list<int>, common: ?int}
+	 * @return array{counted: list<int>, common: ?int, holding: list<int>}
 	 */
-	public static function readMarkerReport(array $attendees): array {
+	public static function readMarkerReport(array $attendees, int $lastMessageId): array {
 		$counted = [];
 		foreach ($attendees as $index => $attendee) {
 			if ($attendee['read_privacy'] !== Participant::PRIVACY_PUBLIC) {
@@ -73,10 +77,15 @@ class Participants extends Base {
 		}
 
 		if ($counted === []) {
-			return ['counted' => [], 'common' => null];
+			return ['counted' => [], 'common' => null, 'holding' => []];
 		}
 
-		return ['counted' => array_keys($counted), 'common' => min($counted)];
+		$common = min($counted);
+		$holding = $common < $lastMessageId
+			? array_keys($counted, $common, true)
+			: [];
+
+		return ['counted' => array_keys($counted), 'common' => $common, 'holding' => $holding];
 	}
 
 	protected function execute(InputInterface $input, OutputInterface $output): int {
@@ -90,8 +99,15 @@ class Participants extends Base {
 		}
 
 		$rows = [];
+		$seen = [];
 		foreach ($this->participantService->getParticipantsForRoom($room) as $participant) {
 			$attendee = $participant->getAttendee();
+			// That query left-joins talk_sessions, so someone connected twice comes back twice.
+			// This command is about attendees, and a duplicate row reads as a duplicate account.
+			if (isset($seen[$attendee->getId()])) {
+				continue;
+			}
+			$seen[$attendee->getId()] = true;
 			$rows[] = [
 				'actor_type' => $attendee->getActorType(),
 				'actor_id' => $attendee->getActorId(),
@@ -101,12 +117,13 @@ class Participants extends Base {
 			];
 		}
 
-		$report = self::readMarkerReport($rows);
+		$lastMessage = $room->getLastMessageId();
+		$report = self::readMarkerReport($rows, $lastMessage);
 		$plain = $input->getOption('output') === 'plain';
 
 		foreach ($rows as $index => $row) {
 			$counted = in_array($index, $report['counted'], true);
-			$pinning = $counted && $report['common'] !== null && $row['last_read_message'] === $report['common'];
+			$pinning = in_array($index, $report['holding'], true);
 
 			$rows[$index]['read_privacy'] = $row['read_privacy'] === Participant::PRIVACY_PUBLIC ? 'public' : 'private';
 			$rows[$index]['counted'] = $counted ? 'yes' : 'no';
@@ -115,7 +132,6 @@ class Participants extends Base {
 
 		$this->writeTableInOutputFormat($input, $output, $rows);
 
-		$lastMessage = $room->getLastMessageId();
 		if ($plain) {
 			$output->writeln('');
 			$output->writeln('last message in the conversation: ' . $lastMessage);
