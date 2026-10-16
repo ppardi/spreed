@@ -1,0 +1,84 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+namespace OCA\Talk\Tests\php\Command\Room;
+
+use OCA\Talk\Command\Room\Participants;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
+use Test\TestCase;
+
+/**
+ * The report must agree with ParticipantService::getLastCommonReadChatMessage(), because its whole
+ * purpose is naming who holds the marker back. A report that blames the wrong attendee is worse
+ * than none: it sends someone to change a setting that was never the problem.
+ */
+class ParticipantsTest extends TestCase {
+	protected function attendee(string $actorType, int $readPrivacy, int $lastRead): array {
+		return ['actor_type' => $actorType, 'read_privacy' => $readPrivacy, 'last_read_message' => $lastRead];
+	}
+
+	public function testTheLowestSharingAttendeeHoldsTheMarker(): void {
+		$report = Participants::readMarkerReport([
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PUBLIC, 1814),
+			$this->attendee(Attendee::ACTOR_FEDERATED_USERS, Participant::PRIVACY_PUBLIC, 1523),
+			$this->attendee(Attendee::ACTOR_FEDERATED_USERS, Participant::PRIVACY_PUBLIC, 1812),
+		]);
+
+		$this->assertSame([0, 1, 2], $report['counted']);
+		$this->assertSame(1523, $report['common']);
+	}
+
+	public function testAPrivateAttendeeIsNotCountedEvenWhenItIsFurthestBehind(): void {
+		// The real case: an agent frozen far behind, excluded because its read privacy is private.
+		$report = Participants::readMarkerReport([
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PUBLIC, 1814),
+			$this->attendee(Attendee::ACTOR_FEDERATED_USERS, Participant::PRIVACY_PRIVATE, 1523),
+		]);
+
+		$this->assertSame([0], $report['counted']);
+		$this->assertSame(1814, $report['common'], 'a private attendee must not hold the marker');
+	}
+
+	public function testGuestsAndBotsAreNotCounted(): void {
+		// getLastCommonReadChatMessage() restricts to users and federated users
+		$report = Participants::readMarkerReport([
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PUBLIC, 900),
+			$this->attendee(Attendee::ACTOR_GUESTS, Participant::PRIVACY_PUBLIC, 1),
+			$this->attendee(Attendee::ACTOR_BOTS, Participant::PRIVACY_PUBLIC, 2),
+			$this->attendee(Attendee::ACTOR_EMAILS, Participant::PRIVACY_PUBLIC, 3),
+			$this->attendee(Attendee::ACTOR_PHONES, Participant::PRIVACY_PUBLIC, 4),
+		]);
+
+		$this->assertSame([0], $report['counted']);
+		$this->assertSame(900, $report['common']);
+	}
+
+	public function testNobodySharingMeansNoCommonMarkerAtAll(): void {
+		// Not the same as "everyone has read everything": no receipts can be shown at all
+		$report = Participants::readMarkerReport([
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PRIVATE, 1814),
+			$this->attendee(Attendee::ACTOR_FEDERATED_USERS, Participant::PRIVACY_PRIVATE, 1523),
+		]);
+
+		$this->assertSame([], $report['counted']);
+		$this->assertNull($report['common']);
+	}
+
+	public function testSeveralAttendeesCanShareTheLowestMarker(): void {
+		$report = Participants::readMarkerReport([
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PUBLIC, 100),
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PUBLIC, 100),
+			$this->attendee(Attendee::ACTOR_USERS, Participant::PRIVACY_PUBLIC, 200),
+		]);
+
+		$this->assertSame(100, $report['common']);
+		$this->assertSame([0, 1, 2], $report['counted']);
+	}
+}
