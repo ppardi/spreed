@@ -16,6 +16,7 @@ use OCA\Talk\Participant;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IUser;
+use OCP\IUserManager;
 use OCP\IUserSession;
 use OCP\L10N\IFactory;
 use Psr\Log\LoggerInterface;
@@ -32,6 +33,7 @@ class ProxyRequestTest extends TestCase {
 			$this->createMock(LoggerInterface::class),
 			$l10nFactory,
 			$this->createMock(IUserSession::class),
+			$this->createMock(IUserManager::class),
 			$this->createMock(TalkConfig::class),
 		);
 
@@ -70,6 +72,7 @@ class ProxyRequestTest extends TestCase {
 			$this->createMock(LoggerInterface::class),
 			$l10nFactory,
 			$userSession,
+			$this->createMock(IUserManager::class),
 			$talkConfig,
 		);
 

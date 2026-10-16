@@ -25,6 +25,7 @@ use OCP\Http\Client\IClientService;
 use OCP\Http\Client\IResponse;
 use OCP\IConfig;
 use OCP\IUser;
+use OCP\IUserManager;
 use OCP\IUserSession;
 use OCP\L10N\IFactory;
 use Psr\Log\LoggerInterface;
@@ -37,6 +38,7 @@ class ProxyRequest {
 		private readonly LoggerInterface $logger,
 		private readonly IFactory $l10nFactory,
 		private readonly IUserSession $userSession,
+		private readonly IUserManager $userManager,
 		private readonly TalkConfig $talkConfig,
 	) {
 	}
@@ -86,8 +88,14 @@ class ProxyRequest {
 		?string $cloudId,
 		#[SensitiveParameter]
 		?string $accessToken,
+		?string $actingUserId = null,
 	): array {
-		$user = $this->userSession->getUser();
+		// A background job has no session, so the caller says whose request this is. Without it the
+		// read-privacy header below is omitted and the remote keeps whatever it last heard, which is
+		// never for an account that does not poll.
+		$user = $actingUserId !== null
+			? $this->userManager->get($actingUserId)
+			: $this->userSession->getUser();
 
 		$options = [
 			'verify' => !$this->config->getSystemValueBool('sharing.federation.allowSelfSignedCertificates'),
@@ -133,12 +141,13 @@ class ProxyRequest {
 		?string $accessToken,
 		string $url,
 		array $parameters,
+		?string $actingUserId = null,
 	): IResponse {
 		if (!$this->talkConfig->isFederationEnabled()) {
 			throw new CannotReachRemoteException();
 		}
 
-		$requestOptions = $this->generateDefaultRequestOptions($cloudId, $accessToken);
+		$requestOptions = $this->generateDefaultRequestOptions($cloudId, $accessToken, $actingUserId);
 		if (!empty($parameters)) {
 			$requestOptions['json'] = $parameters;
 		}
@@ -181,6 +190,7 @@ class ProxyRequest {
 		?string $accessToken,
 		string $url,
 		array $parameters = [],
+		?string $actingUserId = null,
 	): IResponse {
 		return $this->request(
 			'get',
@@ -188,6 +198,7 @@ class ProxyRequest {
 			$accessToken,
 			$url,
 			$parameters,
+			$actingUserId,
 		);
 	}
 

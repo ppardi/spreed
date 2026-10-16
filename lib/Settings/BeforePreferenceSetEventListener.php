@@ -10,9 +10,11 @@ namespace OCA\Talk\Settings;
 
 use OCA\Files_Sharing\SharedStorage;
 use OCA\Talk\AppInfo\Application;
+use OCA\Talk\BackgroundJob\BroadcastReadPrivacy;
 use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Service\ParticipantService;
+use OCP\BackgroundJob\IJobList;
 use OCP\Config\BeforePreferenceSetEvent;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
@@ -30,6 +32,7 @@ class BeforePreferenceSetEventListener implements IEventListener {
 		private readonly IRootFolder $rootFolder,
 		private readonly ParticipantService $participantService,
 		private readonly LoggerInterface $logger,
+		private readonly IJobList $jobList,
 	) {
 	}
 
@@ -73,6 +76,10 @@ class BeforePreferenceSetEventListener implements IEventListener {
 
 			if ($valid && $key === UserPreference::READ_STATUS_PRIVACY) {
 				$this->participantService->updateReadPrivacyForActor(Attendee::ACTOR_USERS, $userId, (int)$value);
+				// Local rooms are done above. A conversation hosted elsewhere keeps its own copy of
+				// this setting and only updates it when this user next makes a federated request,
+				// which an account with no client never does - so announce it instead of waiting.
+				$this->jobList->add(BroadcastReadPrivacy::class, ['userId' => $userId]);
 			}
 			return $valid;
 		}
