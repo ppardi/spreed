@@ -319,6 +319,76 @@ class NotifierTest extends TestCase {
 		$this->getNotifier()->removePendingNotificationsForRoom($room, true);
 	}
 
+	/**
+	 * Records every subject the method narrows its deletion to.
+	 *
+	 * @return list<string>
+	 */
+	protected function captureSubjectsMarkedReadOnOpen(): array {
+		$notification = $this->createMock(INotification::class);
+
+		$room = $this->createMock(Room::class);
+		$room->method('getToken')->willReturn('Token123');
+
+		$this->notificationManager->method('createNotification')->willReturn($notification);
+		$notification->method('setApp')->willReturnSelf();
+		$notification->method('setObject')->willReturnSelf();
+		$notification->method('setUser')->willReturnSelf();
+
+		$subjects = [];
+		$notification->method('setSubject')
+			->willReturnCallback(function (string $subject, array $parameters = []) use ($notification, &$subjects) {
+				$subjects[] = $subject;
+				return $notification;
+			});
+
+		$this->getNotifier()->markMentionNotificationsRead($room, 'userId');
+
+		return $subjects;
+	}
+
+	/**
+	 * A notification with no subject set matches every subject, so reporting a conversation read
+	 * used to withdraw the notification for every ordinary message in it from every device at
+	 * once - including devices whose owner never saw them. Any client reports a conversation read,
+	 * a desktop window sitting behind other windows included, so the deletion has to name the
+	 * subjects it means.
+	 */
+	public function testMarkMentionNotificationsReadNarrowsBySubject(): void {
+		$subjects = $this->captureSubjectsMarkedReadOnOpen();
+
+		$this->assertNotEmpty(
+			$subjects,
+			'Leaving the subject unset deletes every notification for the conversation, whatever it was about'
+		);
+	}
+
+	/**
+	 * `chat` is the subject of an ordinary message in a conversation set to notify about
+	 * everything. That notification is the only record the user has that the message arrived.
+	 */
+	public function testMarkMentionNotificationsReadKeepsOrdinaryMessageNotifications(): void {
+		$subjects = $this->captureSubjectsMarkedReadOnOpen();
+
+		$this->assertNotContains(
+			'chat',
+			$subjects,
+			'An ordinary message notification must survive the conversation being reported read'
+		);
+	}
+
+	/**
+	 * The narrowing must not go so far that the method stops doing its job: a mention the user has
+	 * now read should no longer be pending.
+	 */
+	public function testMarkMentionNotificationsReadStillClearsMentions(): void {
+		$subjects = $this->captureSubjectsMarkedReadOnOpen();
+
+		foreach (['mention', 'mention_direct', 'mention_all', 'mention_group'] as $expected) {
+			$this->assertContains($expected, $subjects, 'Mentions must still be cleared on read');
+		}
+	}
+
 	public static function dataAddMentionAllToList(): array {
 		return [
 			'not notify' => [

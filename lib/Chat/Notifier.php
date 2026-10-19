@@ -384,7 +384,34 @@ class Notifier {
 	}
 
 	/**
-	 * Removes all the pending mention notifications for the room
+	 * Subjects of `chat` notifications that reporting a conversation read clears.
+	 *
+	 * Every subject this class creates for a `chat` object, except `chat` itself: see
+	 * self::markMentionNotificationsRead() for why that one is kept. Over-listing is harmless -
+	 * a subject with nothing pending deletes nothing - so a subject added to this class should be
+	 * added here too unless it is the record of a message the user may not have seen.
+	 */
+	private const SUBJECTS_CLEARED_ON_READ = [
+		'mention',
+		'mention_all',
+		'mention_direct',
+		'mention_group',
+		'mention_team',
+		'mention_reply',
+		'reply',
+		'reaction',
+	];
+
+	/**
+	 * Removes the pending mention notifications for the room
+	 *
+	 * Named subjects, not all of them: a notification with no subject set matches every subject,
+	 * so this used to withdraw the notification for every ordinary message in the conversation
+	 * from every device at once. Any client reporting the conversation read triggers it - a
+	 * desktop window sitting behind other windows reports itself visible - and an ordinary
+	 * message's notification is the only record its recipient has that it arrived. Withdrawing a
+	 * notification the user has not seen loses the message; leaving one they have read is a stale
+	 * entry they can dismiss.
 	 *
 	 * @param Room $chat
 	 * @param ?string $userId
@@ -402,7 +429,11 @@ class Notifier {
 			->setObject('chat', $chat->getToken())
 			->setUser($userId);
 
-		$this->notificationManager->markProcessed($notification);
+		foreach (self::SUBJECTS_CLEARED_ON_READ as $subject) {
+			$notification->setSubject($subject);
+			$this->notificationManager->markProcessed($notification);
+		}
+
 		if ($shouldFlush) {
 			$this->notificationManager->flush();
 		}
